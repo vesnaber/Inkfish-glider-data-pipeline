@@ -4,8 +4,8 @@
 *.tbd
 *.mbd
 *.cac
-/cache
-/data
+/cache/*
+/data/*
 
 # Logs
 *.log
