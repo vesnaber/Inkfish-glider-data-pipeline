@@ -38,15 +38,15 @@ metadata:
                      assurance of quality assurance or quality control."
   project: Curacao2026
   project_url: http://inkfish
-  publisher_email: 
-  publisher_name:  
-  publisher_url: 
-  references:
+  publisher_email: _@inkfish.com
+  publisher_name:  Inkfish
+  publisher_url: http://inkfish
+  references: http://inkfish
   # https://www.nodc.noaa.gov/General/NODC-Archive/seanamelist.txt
-  sea_name:  
+  sea_name:  Caribbean Sea
   source:     Observational data from a profiling glider.
   standard_name_vocabulary: CF STandard Name Table v72
-  summary:
+  summary: Inkfish expedition
   transmission_system: IRRIDIUM
   wmo_id: "999999"
 

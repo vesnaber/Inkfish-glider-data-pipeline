@@ -6,6 +6,7 @@
 *.cac
 /cache/*
 /data/*
+*.nc 
 
 # Logs
 *.log

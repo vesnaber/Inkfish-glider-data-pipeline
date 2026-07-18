@@ -8,11 +8,12 @@ import pyglider.utils as pgutils
 
 logging.basicConfig(level='INFO')
 
-binarydir = './realtime_raw/'
-rawdir = './realtime_rawnc/'
+binarydir = './data/selkie-from-glider-20260718T140801/'
+# rawdir = './realtime_rawnc/'
+rawdir = './data/selkie-from-glider-20260718T140801/'
 cacdir = './cache/'
 sensorlist = './dfo-rosie713_sensors.txt'
-deploymentyaml = './deploymentRealtime.yml'
+deploymentyaml = './deployment.yml'
 l1tsdir = './L0-timeseries/'
 profiledir = './L0-profiles/'
 griddir = './L0-gridfiles/'
