@@ -1,5 +1,12 @@
+# Data files
 *.dbd
 *.ebd
 *.tbd
 *.mbd
 *.cac
+
+# Logs
+*.log
+
+# System files
+.DS_Store
