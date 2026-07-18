@@ -60,7 +60,7 @@ if True:
 # make grid of dataset....
 
 outname2 = ncprocess.make_gridfiles(outname, griddir, deploymentyaml)
-pgutils.example_gridplot(outname2, './gridplot2.png', ylim=[150, 0],
+pgutils.example_gridplot(outname2, './gridplot2.png', ylim=[900, 0],
                          toplot=['potential_temperature', 'salinity',
-                                 'oxygen_concentration', 'chlorophyll', 'cdom'])
+                                 'oxygen_concentration', 'chlorophyll', 'cdom', 'par'])
 # %%
