@@ -138,7 +138,7 @@ DEPTH_OVERLAY = True        # adds an "+ glider depth" toggle button that draws
                             # second (right, reversed) y axis. Off on load,
                             # click the button to show it. It is plotted
                             # against TIME, so it only lines up when x = time.
-DEPTH_OVERLAY_COLOUR = 'rgba(200,60,60,0.65)'
+DEPTH_OVERLAY_COLOUR = "#9adfe3"
 DEPTH_OVERLAY_WIDTH = 1.0
 
 # ---- T-S diagram --------------------------------------------------------
