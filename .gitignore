@@ -9,6 +9,8 @@
 *.nc 
 *.png
 /rawnc/*
+/__pycache__/*
+/interactive/*
 
 # Logs
 *.log
