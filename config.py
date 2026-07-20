@@ -11,7 +11,7 @@ import numpy as np
 # ============================================================
 # EDIT THIS
 # ============================================================
-GLIDER = 'unit_1272'          # e.g. 'selkie', 'unit_1272'  -> used in filenames
+GLIDER = 'selkie'          # e.g. 'selkie', 'unit_1272'  -> used in filenames
                            # must match metadata:glider_name in deployment.yml
 
 REALTIME = True            # True  -> realtime files: sbd (flight) / tbd (science)
@@ -43,48 +43,106 @@ GLIDERSUFFIX = 'sbd' if REALTIME else 'dbd'
 # ============================================================
 # helpers
 # ============================================================
-def latest_data_dir(verbose=True):
-    '''Newest subfolder of data/ that contains glider binaries.'''
-    def has_binaries(d):
-        return any(d.glob(f'*.{GLIDERSUFFIX}')) or any(d.glob(f'*.{GLIDERSUFFIX.upper()}'))
-
-    cands = sorted((d for d in DATA.iterdir() if d.is_dir() and has_binaries(d)),
-                   key=lambda d: d.name)
-    if not cands:
+'''
+Replacements for latest_data_dir() and newest_nc() in config.py, so both
+pick files belonging to GLIDER instead of whatever is newest overall.
+Also add HTML to the mkdir loop.
+'''
+#%% ============================================================
+#   add HTML to the folder-creation loop
+#   ============================================================
+for _d in (DATA, CACHE, L0_TS, L0_PROFILES, L0_GRID, RAWNC, PLOTS, HTML):
+    _d.mkdir(parents=True, exist_ok=True)
+ 
+ 
+#%% ============================================================
+#   helpers
+#   ============================================================
+def _matches_glider(path, glider=None):
+    '''True if a file or folder belongs to `glider`. Matches on the name,
+    case-insensitively. Dinkum binaries are usually
+    <glider>-<year>-<yday>-<mission>-<segment>.sbd, and download folders
+    normally carry the glider name too. GUESSING!! - if your folders are
+    named differently (dates only, mission numbers), see the note at the
+    bottom of this file.'''
+    return (glider or GLIDER).lower() in path.name.lower()
+ 
+ 
+def latest_data_dir(glider=None, verbose=True, strict=True):
+    '''Newest subfolder of data/ holding binaries for `glider`.
+ 
+    A folder counts as this glider's if the folder name contains the glider
+    name, or any binary inside it does. strict=True (default) raises when
+    nothing matches instead of silently falling back to another glider.'''
+    glider = glider or GLIDER
+ 
+    def binaries(d):
+        return (list(d.glob(f'*.{GLIDERSUFFIX}')) +
+                list(d.glob(f'*.{GLIDERSUFFIX.upper()}')))
+ 
+    with_bins = [d for d in DATA.iterdir() if d.is_dir() and binaries(d)]
+    if not with_bins:
         raise FileNotFoundError(
             f'no folder in {DATA} contains *.{GLIDERSUFFIX} files.\n'
             f'Put your download folder in data/ (or set REALTIME correctly).')
-    d = cands[-1]
+ 
+    mine = [d for d in with_bins
+            if _matches_glider(d, glider)
+            or any(_matches_glider(f, glider) for f in binaries(d))]
+ 
+    if not mine:
+        msg = (f'no folder in {DATA} holds *.{GLIDERSUFFIX} files for '
+               f'"{glider}".\nFolders with binaries: '
+               f'{", ".join(d.name for d in sorted(with_bins))}\n'
+               f'Check GLIDER in config.py, or call '
+               f'latest_data_dir(strict=False) to use the newest regardless.')
+        if strict:
+            raise FileNotFoundError(msg)
+        print(f'WARNING: {msg}')
+        mine = with_bins
+ 
+    mine = sorted(mine, key=lambda d: d.name)
+    d = mine[-1]
     if verbose:
-        print(f'DATA FOLDER: using the newest one -> {d.name}')
-        if len(cands) > 1:
-            print(f'  ({len(cands)} folders available: '
-                  f'{", ".join(c.name for c in cands)})')
-        print('  To use a different one, set DATA_DIR manually at the top '
-              'of 01_process_to_nc.py')
+        print(f'DATA FOLDER [{glider}]: newest -> {d.name}')
+        if len(mine) > 1:
+            print(f'  ({len(mine)} folders for this glider: '
+                  f'{", ".join(c.name for c in mine)})')
+        other = [x.name for x in with_bins if x not in mine]
+        if other:
+            print(f'  (ignored, other gliders: {", ".join(sorted(other))})')
     return d
-
-
-def newest_nc(folder, must_contain=None):
-    '''Newest .nc in a folder (by modification time). must_contain filters
-    on filename, e.g. the glider name.'''
-    files = sorted(Path(folder).glob('*.nc'), key=lambda f: f.stat().st_mtime)
-    if must_contain:
-        hits = [f for f in files if must_contain in f.name]
-        if hits:
-            files = hits
-        elif files:
-            print(f'WARNING: no file in {folder} has "{must_contain}" in its '
-                  f'name - is GLIDER set correctly in config.py?')
+ 
+ 
+def newest_nc(folder, must_contain=None, strict=True):
+    '''Newest .nc in `folder` belonging to `must_contain` (defaults to
+    GLIDER). strict=True raises if nothing matches, rather than handing back
+    another glider's file.'''
+    must_contain = GLIDER if must_contain is None else must_contain
+    folder = Path(folder)
+    files = sorted(folder.glob('*.nc'), key=lambda f: f.stat().st_mtime)
     if not files:
         raise FileNotFoundError(f'no .nc files in {folder} - run 01 first')
+ 
+    if must_contain:
+        hits = [f for f in files if must_contain.lower() in f.name.lower()]
+        if not hits:
+            msg = (f'no .nc in {folder} has "{must_contain}" in its name.\n'
+                   f'Present: {", ".join(f.name for f in files)}\n'
+                   f'Check GLIDER in config.py.')
+            if strict:
+                raise FileNotFoundError(msg)
+            print(f'WARNING: {msg}\n  falling back to the newest file')
+        else:
+            files = hits
+ 
     if len(files) > 1:
-        print(f'  {folder.name}: {len(files)} files, using the newest: '
-              f'{files[-1].name}')
+        print(f'  {folder.name} [{must_contain}]: {len(files)} files, using '
+              f'the newest: {files[-1].name}')
     else:
         print(f'  loading {files[-1].name}')
     return files[-1]
-
+ 
 
 def clear_outputs(dirs=None):
     '''Delete old .nc so a rerun cannot leave stale files behind.'''

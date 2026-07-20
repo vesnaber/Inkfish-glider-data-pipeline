@@ -8,12 +8,12 @@ metadata:
   creator_url: http://inkfish.com
   data_mode: R
   deployment_id: '1'
-  deployment_name: unit_1272-20260717
-  deployment_start: '2026-07-18'
+  deployment_name: selkie-20260717
+  deployment_start: '2026-07-17'
   deployment_end: null
   format_version: IOOS_Glider_NetCDF_v2.0.nc
-  glider_name: unit_1272
-  glider_serial: '1272'
+  glider_name: selkie
+  glider_serial: '1104'
   glider_model: Slocum G3 Deep
   glider_instrument_name: slocum
   glider_wmo: '999999'

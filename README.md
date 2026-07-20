@@ -5,22 +5,37 @@ Turns Slocum glider binaries into netcdf and plots, using
 
 ```
 config.py                    <- SET YOUR GLIDER HERE (the only file you must edit)
-deployment_{your_glider_name}.yml               <- metadata + which sensor maps to which variable
-sensor_list.txt              <- written by 00, don't edit by hand
-data/<download folder>/      <- put glider files here (sbd/tbd or dbd/ebd)
+deployment_{your_glider_name}.yml               <- metadata + which sensor maps to which variable (put your own data in it)
+sensor_list.txt              <- this file is created with 00 script (don't edit by hand)
+data/<download folder>/      <- put glider files here (sbd/tbd or dbd/ebd) - see below in what format and shape this should be
 L0-timeseries/               \
-L0-profiles/                  } created by 01
+L0-profiles/                  } these folders are created by 01
 L0-gridfiles/                /
-plots/                       <- all figures
+plots/                       <- all figures are dumped here
 interactive/                 <- here the HTML links are stored for interctive website
 ```
 
-## Install
+
+
+## Prepare your workflow
+
+Steps to follow:
+1. pull the repository on your local computer
+2. create the following folder: `data/`
+3. in a folder `data/` paste the folder that you download from sfmc website (from your glider). That folder has .sbd and .tbd files. The folder has a name: {glider_name}-from-glider-{date_stamp}
+4. in folder data you can also dump bathyemtry .png and bathymetry XYZ files (for 3D interactive image)
+5. create python kernel with the correct dependancies (see below)
+6. check file `config.py` and change the name of the glider to your glider's name
+7. re-create your own `deployment_{your_glider_name}.yml` based on the example from the file that is attached to this repository
+8. run scripts in the following order: 00, 01, 02, 04
+9. check interactive HTML in folder `intercative/`
+
+## Install python dependencies
 
 ```bash
 conda create -n gliderwork python=3.12
 conda activate gliderwork
-conda install -c conda-forge pyglider dbdreader cmocean gsw
+conda install -c conda-forge pyglider dbdreader cmocean gsw plotly pyshp
 ```
 
 ## First time with a new glider
