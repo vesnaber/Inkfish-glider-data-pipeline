@@ -7,6 +7,8 @@
 /cache/*
 /data/*
 *.nc 
+*.png
+/rawnc/*
 
 # Logs
 *.log
