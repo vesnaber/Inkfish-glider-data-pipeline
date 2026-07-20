@@ -5,13 +5,14 @@ Turns Slocum glider binaries into netcdf and plots, using
 
 ```
 config.py                    <- SET YOUR GLIDER HERE (the only file you must edit)
-deployment.yml               <- metadata + which sensor maps to which variable
+deployment_{your_glider_name}.yml               <- metadata + which sensor maps to which variable
 sensor_list.txt              <- written by 00, don't edit by hand
 data/<download folder>/      <- put glider files here (sbd/tbd or dbd/ebd)
 L0-timeseries/               \
 L0-profiles/                  } created by 01
 L0-gridfiles/                /
 plots/                       <- all figures
+interactive/                 <- here the HTML links are stored for interctive website
 ```
 
 ## Install
@@ -31,7 +32,7 @@ conda install -c conda-forge pyglider dbdreader cmocean gsw
    - `GLIDER` — the glider name, e.g. `'selkie'` or `'unit_1272'`
    - `REALTIME` — `True` for the live feed (`sbd`/`tbd`),
      `False` for the full-resolution data you get after recovery (`dbd`/`ebd`)
-3. Open **`deployment.yml`** and set the `metadata:` block
+3. Open **`deployment_{your_glider_name}.yml`** and set the `metadata:` block
    (`glider_name` must match `config.GLIDER`, plus serial, project, etc.).
    Under `netcdf_variables:` each entry needs a `source:` = the Slocum sensor
    name. You don't have to remove sensors your glider lacks — step 1 skips
@@ -44,7 +45,6 @@ conda install -c conda-forge pyglider dbdreader cmocean gsw
 python 00_build_sensor_list.py       # which sensors actually have data
 python 01_process_to_nc.py           # binaries -> netcdf + quick look plot
 python 02_plots_full_timeseries.py   # proper plots, whole deployment
-python 03_plots_lastNlegs.py         # same, only the last few legs
 python 04_interactive_html.py        # interactive web page (zoom, pick axes, map)
 ```
 
