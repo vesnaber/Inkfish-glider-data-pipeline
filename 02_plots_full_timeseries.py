@@ -42,6 +42,8 @@ MACHINERY = [
     (['pitch', 'm_pitch'],              [],                                          'pitch [deg]', RAD2DEG),
     (['roll', 'm_roll'],                [],                                          'roll [deg]', RAD2DEG),
     (['altitude', 'm_altitude'],        [],                                          'altitude [m]', 1),
+    (['u', 'm_water_vx'],      [],                                          'velocity [m/s]', 1),
+    (['v', 'm_water_vy'],      [],                                          'velocity [m/s]', 1),
 ]
 
 # ---- looks ----

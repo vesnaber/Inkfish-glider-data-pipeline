@@ -313,6 +313,18 @@ netcdf_variables:
     observation_type: "calculated"
     coordinates:  time latitude longitude depth
 
+  u:
+    source: m_water_vx
+    long_name: eastward water velocity
+    standard_name: eastward_sea_water_velocity
+    units: m s-1
+
+  v:
+    source: m_water_vy
+    long_name: northward water velocity
+    standard_name: northward_sea_water_velocity
+    units: m s-1
+
   # # ---- depth-averaged currents (per dive segment) ----
   # u:
   #   source:  m_final_water_vx
