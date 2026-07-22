@@ -1,19 +1,39 @@
-# Data files
+# ---- pipeline state (derived, machine-specific) ----
+.state/
+
+# ---- data in and out ----
+data/
+cache/
+rawnc/
+L0-timeseries/
+L0-profiles/
+L0-gridfiles/
+plots/
+interactive/
+logs/
+
+# ---- derived files that used to sit in the root ----
+sensor_list_used.txt
+deployment_used.yml
+segments.csv
+
+# ---- big binaries ----
+*.nc
+*.npz
+*.zarr
+*.sbd
+*.tbd
 *.dbd
 *.ebd
-*.tbd
-*.mbd
 *.cac
-/cache/*
-/data/*
-*.nc 
-*.png
-/rawnc/*
-/__pycache__/*
-/interactive/*
+*.html
 
-# Logs
-*.log
+# ---- python ----
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
 
-# System files
+# ---- os ----
 .DS_Store
