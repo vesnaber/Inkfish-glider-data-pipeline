@@ -98,6 +98,30 @@ PROFILE_LINE_WIDTH = 1.0
 PROFILE_LINE_EVERY = 1      # draw every Nth profile tick (2, 5, 10 ... thins
                             # the stripes without touching the data).
 
+SECTION_DEPTH_STRIDE = 4    # keep every Nth depth bin in the section panels.
+                            # The grid is 1 m over ~1100 m = 1100 rows, but a
+                            # 340 px panel can only draw ~340. 4 -> 4 m bins,
+                            # visually identical, 4x smaller. This is the
+                            # single biggest file-size lever.
+
+SECTION_MAX_COLS = 600      # was 1500 (selkie used 1103). 600 columns over a
+                            # 4-day deployment is ~10 min per column.
+
+SECTION_DECIMALS = {        # JSON stores these as text: every decimal place
+    'temperature': 3,       # is a character x 1.2M values. Instrument
+    'salinity': 3,          # precision is well below these already.
+    'potential_density': 2,
+    'conductivity': 4,
+    'chlorophyll': 4,
+    'oxygen_concentration': 2,
+    'par': 4,
+}
+SECTION_DECIMALS_DEFAULT = 3
+
+N_TIME_WINDOWS = 3          # was 6. Each slider step stores a full copy of
+                            # the curtain geometry (X, Y, Z, F) - this is the
+                            # 5.2 MB "sliders" column.
+
 # ---- colours ------------------------------------------------------------
 CMAP_PER_VAR = {'temperature': 'thermal', 'conductivity': 'haline',
                 'salinity': 'haline', 'potential_density': 'dense',
@@ -176,6 +200,45 @@ BATHY_BOUNDS  = (11.911966662, -69.244978161, 12.451537991, -68.610831513)
 BATHY_OPACITY = 0.7
 MAP_STYLE = 'carto-positron'   # any style not needing a token, or 'white-bg'
 MAP_ZOOM = 9
+
+# ---- depth-averaged currents (map arrows + current rose) ----------------
+SHOW_CURRENTS = True        # needs u, v and depth in the timeseries
+SURFACE_DEPTH = 15          # m. Shallower than this counts as "at the
+                            # surface". Each surfacing splits the record into
+                            # intervals; u, v are averaged over each interval,
+                            # which is what m_water_vx/vy actually represent -
+                            # one estimate per dive, not a time series.
+CURRENT_SKIP_FIRST = 10     # drop the first N intervals. Deployment and the
+                            # first dives give unreliable depth-averaged
+                            # currents.
+
+CURRENT_ARROW_SCALE = 0.10  # DEGREES of latitude drawn per 1 m/s. Purely
+                            # visual - raise until the arrows read well at
+                            # your usual zoom. (0.10 at 0.3 m/s = 0.03 deg,
+                            # about 3 km.) The east component is divided by
+                            # cos(lat) so the arrow points the true way on a
+                            # Mercator basemap.
+CURRENT_ARROW_COLOUR = 'red'
+CURRENT_ARROW_WIDTH = 2
+CURRENT_HEAD_FRAC = 0.25    # arrowhead length as a fraction of the shaft
+CURRENT_HEAD_ANGLE = 25     # degrees each barb sits off the shaft
+CURRENT_TIP_SIZE = 2        # small marker at the tip - it exists only to
+                            # carry the hover text (speed, direction, u/v).
+                            # 0 removes it, and the hover with it.
+
+# ---- track styling ------------------------------------------------------
+TRACK_VIA_SURFACINGS = True # grey line through the surfacing positions only,
+                            # which is where the glider actually got a GPS
+                            # fix. False = the full interpolated track.
+TRACK_COLOUR = 'lightgrey'
+TRACK_WIDTH = 2
+SHOW_TRACK_POINTS = False   # every sample as a faint dot as well
+SURFACE_MARKER_SIZE = 8
+SURFACE_CMAP = 'Viridis'    # surfacings coloured by time order
+START_END_SIZE = 18
+
+SHOW_CURRENT_ROSE = True    # a "current rose" sub-tab next to the map
+ROSE_SECTOR_DEG = 15        # sector width; 15 -> 24 petals
 
 # ---- page ---------------------------------------------------------------
 OUT_DIR = config.HTML       # <glider>.html is written here
@@ -429,6 +492,9 @@ def sections_fig(grid):
         lo, hi = clim(A)
         Z = np.round(interp_to(A, times, tf), 4)
         Z, depths = crop_empty_rows(Z, grid.depth.values)
+        if SECTION_DEPTH_STRIDE > 1:
+            Z, depths = Z[::SECTION_DEPTH_STRIDE], depths[::SECTION_DEPTH_STRIDE]
+        Z = np.round(Z, SECTION_DECIMALS.get(v, SECTION_DECIMALS_DEFAULT))
         cs = band_scale(v)
         bar = dict(len=1 / len(have) - 0.03, thickness=11,
                    y=1 - (k + 0.5) / len(have))
@@ -971,7 +1037,133 @@ def bathy_layer():
                 coordinates=[[w, n], [e, n], [e, s], [w, s]])
 
 
+def surface_intervals(ts, surface_depth=SURFACE_DEPTH,
+                      skip=CURRENT_SKIP_FIRST):
+    '''Split the record at surfacings and average u, v over each interval.
+
+    m_water_vx/vy is a depth-averaged estimate the glider computes per dive,
+    so one vector per surface-to-surface interval is the honest sampling -
+    plotting it per sample would repeat the same number hundreds of times.
+
+    Returns a dict of arrays (lon, lat mid-interval; lon0/lat0, lon1/lat1 the
+    endpoints; u, v, speed, direction, t0, t1) or None.
+    '''
+    need = {'u', 'v'}
+    if not need <= set(ts.data_vars) or 'depth' not in ts:
+        print('   no u/v/depth - no current vectors')
+        return None
+
+    depth = np.asarray(ts.depth.values, float)
+    idx = np.where(depth < surface_depth)[0]
+    if idx.size < 3:
+        print('   no surfacings found - no current vectors')
+        return None
+
+    breaks = np.where(np.diff(idx) > 1)[0]
+    ev = idx[np.r_[0, breaks + 1]]          # first sample of each surfacing
+    print(f'   {ev.size} surface events '
+          f'(depth < {surface_depth} m), skipping the first {skip}')
+    if ev.size - 1 <= skip:
+        print('   not enough intervals left after the skip')
+        return None
+
+    lon = np.asarray(ts.longitude.values, float)
+    lat = np.asarray(ts.latitude.values, float)
+    u = np.asarray(ts.u.values, float)
+    v = np.asarray(ts.v.values, float)
+    t = np.asarray(ts.time.values)
+
+    r = dict(lon0=[], lat0=[], lon1=[], lat1=[], lon=[], lat=[],
+             u=[], v=[], t0=[], t1=[])
+    for a, b in zip(ev[skip:-1], ev[skip + 1:]):
+        seg_u, seg_v = u[a:b], v[a:b]
+        if not (np.isfinite(seg_u).any() and np.isfinite(seg_v).any()):
+            continue
+        if not (np.isfinite(lon[[a, b]]).all() and np.isfinite(lat[[a, b]]).all()):
+            continue
+        r['lon0'].append(lon[a]);  r['lat0'].append(lat[a])
+        r['lon1'].append(lon[b]);  r['lat1'].append(lat[b])
+        r['lon'].append((lon[a] + lon[b]) / 2)
+        r['lat'].append((lat[a] + lat[b]) / 2)
+        r['u'].append(np.nanmean(seg_u))
+        r['v'].append(np.nanmean(seg_v))
+        r['t0'].append(t[a]);      r['t1'].append(t[b])
+
+    if not r['u']:
+        print('   every interval was NaN - no current vectors')
+        return None
+
+    for k in ('lon0', 'lat0', 'lon1', 'lat1', 'lon', 'lat', 'u', 'v'):
+        r[k] = np.asarray(r[k], float)
+    r['speed'] = np.hypot(r['u'], r['v'])
+    # compass bearing the current flows TOWARD (0 = north, 90 = east)
+    r['direction'] = (np.degrees(np.arctan2(r['u'], r['v'])) + 360) % 360
+    print(f'   {r["u"].size} current vectors, '
+          f'{np.nanmin(r["speed"]):.3f}-{np.nanmax(r["speed"]):.3f} m/s')
+    return r
+
+
+def current_arrows(cur, deg_per_ms=CURRENT_ARROW_SCALE,
+                   head_frac=CURRENT_HEAD_FRAC, head_deg=CURRENT_HEAD_ANGLE):
+    '''Arrows with heads, all in ONE trace using None breaks.
+
+    Scattermap has no arrowhead, so each head is two short barbs rotated back
+    from the tip. Geometry is done in a local east-metric space (dlon scaled
+    by cos(lat)) and converted back, otherwise the heads are skewed and the
+    shafts point slightly wrong on a Mercator basemap.'''
+    coslat = np.cos(np.radians(cur['lat']))
+    ex = cur['u'] * deg_per_ms            # east component, metric-ish
+    ey = cur['v'] * deg_per_ms            # north component
+    lon1 = cur['lon'] + ex / coslat
+    lat1 = cur['lat'] + ey
+
+    mag = np.hypot(ex, ey)
+    mag[mag == 0] = np.nan                # zero-length arrow gets no head
+    ux, uy = -ex / mag, -ey / mag         # unit vector pointing back down it
+
+    a = np.radians(head_deg)
+    ca, sa = np.cos(a), np.sin(a)
+    barbs = []
+    for s in (+1, -1):                    # rotate the back-vector both ways
+        rx = ux * ca - uy * (s * sa)
+        ry = ux * (s * sa) + uy * ca
+        blon = lon1 + rx * mag * head_frac / coslat
+        blat = lat1 + ry * mag * head_frac
+        barbs.append((blon, blat))
+
+    xs, ys = [], []
+    for i in range(cur['lon'].size):
+        xs += [cur['lon'][i], lon1[i], None]          # shaft
+        ys += [cur['lat'][i], lat1[i], None]
+        for blon, blat in barbs:                      # two barbs
+            if np.isfinite(blon[i]) and np.isfinite(blat[i]):
+                xs += [lon1[i], blon[i], None]
+                ys += [lat1[i], blat[i], None]
+
+    shafts = go.Scattermap(
+        lon=xs, lat=ys, mode='lines',
+        line=dict(width=CURRENT_ARROW_WIDTH, color=CURRENT_ARROW_COLOUR),
+        name='depth-avg current', hoverinfo='skip')
+
+    out = [shafts]
+    if CURRENT_TIP_SIZE:
+        out.append(go.Scattermap(
+            lon=lon1, lat=lat1, mode='markers',
+            marker=dict(size=CURRENT_TIP_SIZE, color=CURRENT_ARROW_COLOUR),
+            name='current', showlegend=False,
+            text=[f'{str(a_):.16s} -> {str(b_):.16s}<br>'
+                  f'{s_:.3f} m/s toward {d_:.0f} deg<br>'
+                  f'u {uu:+.3f}, v {vv:+.3f}'
+                  for a_, b_, s_, d_, uu, vv in
+                  zip(cur['t0'], cur['t1'], cur['speed'], cur['direction'],
+                      cur['u'], cur['v'])],
+            hovertemplate='%{text}<extra></extra>'))
+    return out
+
+
 def map_fig(ts, coast, bathy):
+    '''Basemap + bathymetry image + coastline + grey track through the
+    surfacings, coloured by time + depth-averaged current arrows.'''
     if not {'longitude', 'latitude'} <= set(ts.data_vars) | set(ts.coords):
         print('   no position - skipping the map')
         return None
@@ -983,24 +1175,53 @@ def map_fig(ts, coast, bathy):
         return None
     lon, lat, times = lon[ok], lat[ok], np.asarray(ts.time.values)[ok]
 
+    cur = surface_intervals(ts) if SHOW_CURRENTS else None
+
+    # the grey line follows the surfacings (real GPS fixes) when we have them
+    if TRACK_VIA_SURFACINGS and cur is not None:
+        tlon = np.append(cur['lon0'], cur['lon1'][-1])
+        tlat = np.append(cur['lat0'], cur['lat1'][-1])
+        ttime = np.append(cur['t0'], cur['t1'][-1])
+    else:
+        tlon, tlat, ttime = lon, lat, times
+
     fig = go.Figure()
-    fig.add_trace(go.Scattermap(lon=lon, lat=lat, mode='lines',
-                                line=dict(width=2, color='#1f77b4'),
-                                name='track', hoverinfo='skip'))
+
     fig.add_trace(go.Scattermap(
-        lon=lon, lat=lat, mode='markers',
-        marker=dict(size=5, color='#1f77b4', opacity=0.55),
-        text=[str(t)[:19] for t in times], name='positions',
+        lon=tlon, lat=tlat, mode='lines',
+        line=dict(width=TRACK_WIDTH, color=TRACK_COLOUR),
+        name='track', hoverinfo='skip'))
+
+    if SHOW_TRACK_POINTS:
+        fig.add_trace(go.Scattermap(
+            lon=lon, lat=lat, mode='markers',
+            marker=dict(size=3, color='#888', opacity=0.35),
+            name='all samples', hoverinfo='skip'))
+
+    # surfacings coloured by time order
+    fig.add_trace(go.Scattermap(
+        lon=tlon, lat=tlat, mode='markers',
+        marker=dict(size=SURFACE_MARKER_SIZE,
+                    color=np.arange(tlon.size), colorscale=SURFACE_CMAP,
+                    showscale=False),
+        name='surfacings',
+        text=[str(t)[:19] for t in ttime],
         hovertemplate='%{text}<br>%{lat:.4f}, %{lon:.4f}<extra></extra>'))
-    fig.add_trace(go.Scattermap(lon=[lon[0]], lat=[lat[0]], mode='markers',
-                                marker=dict(size=12, color='green'),
-                                name='start',
-                                hovertemplate='start<extra></extra>'))
+
+    if cur is not None:
+        for tr in current_arrows(cur):
+            fig.add_trace(tr)
+
+    fig.add_trace(go.Scattermap(
+        lon=[tlon[0]], lat=[tlat[0]], mode='markers',
+        marker=dict(size=START_END_SIZE, color='limegreen'), name='start',
+        text=[str(ttime[0])[:19]],
+        hovertemplate='start<br>%{text}<extra></extra>'))
     fig.add_trace(go.Scattermap(
         lon=[lon[-1]], lat=[lat[-1]], mode='markers',
-        marker=dict(size=17, color='red'), name='last position',
-        text=[f'last position<br>{str(times[-1])[:19]}'],
-        hovertemplate='%{text}<extra></extra>'))
+        marker=dict(size=START_END_SIZE, color='red'), name='last position',
+        text=[str(times[-1])[:19]],
+        hovertemplate='last position<br>%{text}<extra></extra>'))
 
     layers = []
     if bathy:
@@ -1008,15 +1229,59 @@ def map_fig(ts, coast, bathy):
     if coast:
         layers.append(dict(source=coast, type='line', color='black',
                            line=dict(width=1.5)))
+
     fig.update_layout(
         map=dict(style=MAP_STYLE, zoom=MAP_ZOOM, layers=layers,
                  center=dict(lon=float(np.nanmean(lon)),
                              lat=float(np.nanmean(lat)))),
         height=740, margin=dict(t=50, l=0, r=0, b=0),
         legend=dict(orientation='h', y=1.02),
-        title='track (red = last known position)')
+        title='surface events and depth-averaged currents '
+              '(green = start, red = last position)')
     return fig
 
+
+def rose_fig(ts):
+    '''Current rose: how often the depth-averaged flow heads each way, and
+    how fast. Angle is the direction the current flows TOWARD.'''
+    cur = surface_intervals(ts)
+    if cur is None:
+        return None
+
+    edges = np.arange(0, 360 + ROSE_SECTOR_DEG, ROSE_SECTOR_DEG)
+    counts, _ = np.histogram(cur['direction'], bins=edges)
+    centres = edges[:-1] + ROSE_SECTOR_DEG / 2
+    pct = 100 * counts / max(counts.sum(), 1)
+
+    mean_speed = np.array([
+        cur['speed'][(cur['direction'] >= a) & (cur['direction'] < b)].mean()
+        if ((cur['direction'] >= a) & (cur['direction'] < b)).any() else 0.0
+        for a, b in zip(edges[:-1], edges[1:])])
+
+    fig = go.Figure(go.Barpolar(
+        r=pct, theta=centres, width=ROSE_SECTOR_DEG * 0.95,
+        marker=dict(color=mean_speed, colorscale=scale('speed'),
+                    showscale=True,
+                    colorbar=dict(title='mean<br>m/s', thickness=12)),
+        customdata=np.stack([counts, mean_speed], axis=-1),
+        hovertemplate='toward %{theta:.0f} deg<br>%{r:.1f} %% of intervals '
+                      '(%{customdata[0]:.0f})<br>'
+                      'mean %{customdata[1]:.3f} m/s<extra></extra>'))
+
+    fig.update_layout(
+        template='plotly_white', height=760,
+        margin=dict(t=90, l=40, r=40, b=40),
+        polar=dict(
+            angularaxis=dict(rotation=90, direction='clockwise',
+                             tickmode='array',
+                             tickvals=[0, 45, 90, 135, 180, 225, 270, 315],
+                             ticktext=['N', 'NE', 'E', 'SE',
+                                       'S', 'SW', 'W', 'NW']),
+            radialaxis=dict(ticksuffix=' %', angle=90)),
+        title=f'depth-averaged current rose - direction flowed TOWARD, '
+              f'{cur["u"].size} surface intervals '
+              f'(first {CURRENT_SKIP_FIRST} skipped)')
+    return fig
 
 def track_bbox(ts):
     lon = np.asarray(ts['longitude'].values, float)
@@ -1157,8 +1422,20 @@ def build(glider, coast, bathy):
             'drag to rotate, scroll to zoom | slider picks the time window')
 
     mp = map_fig(ts, coast, bathy)
+    rose = rose_fig(ts) if SHOW_CURRENT_ROSE else None
     if mp is not None:
-        add('Map', embed(mp), 'scroll to zoom, drag to pan')
+        if rose is not None:
+            inner = ('<div id="maptab" class="sub-group"><div class="subnav">'
+                     '<button onclick="showSub(\'maptab\',0)">map</button>'
+                     '<button onclick="showSub(\'maptab\',1)">current rose</button>'
+                     '</div>'
+                     f'<div class="sub">{embed(mp)}</div>'
+                     f'<div class="sub">{embed(rose)}</div></div>')
+        else:
+            inner = embed(mp)
+        add('Map', inner,
+            'scroll to zoom, drag to pan | red arrows = depth-averaged '
+            'current per surface-to-surface interval')
 
     links = ('gliders: ' + ' '.join(f'<a href="{g}.html">{g}</a>'
                                     for g in GLIDERS)) if len(GLIDERS) > 1 else ''
@@ -1176,9 +1453,16 @@ def build(glider, coast, bathy):
     return out
 
 
-COAST = coastline_geojson(COASTLINE_SHP)
-BATHY = bathy_layer()
-pages = [build(g, COAST, BATHY) for g in GLIDERS]
-print(f'\nopen: {pages[0]}')
+# COAST = coastline_geojson(COASTLINE_SHP)
+# BATHY = bathy_layer()
+# pages = [build(g, COAST, BATHY) for g in GLIDERS]
+# print(f'\nopen: {pages[0]}')
 
+# %%
+
+if __name__ == '__main__':
+    COAST = coastline_geojson(COASTLINE_SHP)
+    BATHY = bathy_layer()
+    pages = [build(g, COAST, BATHY) for g in GLIDERS]
+    print(f'\nopen: {pages[0]}')
 # %%
