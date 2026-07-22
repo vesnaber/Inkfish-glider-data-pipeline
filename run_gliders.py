@@ -17,7 +17,7 @@ PARALLEL = 2        # gliders at a time. 1 = sequential, and the output is
 REALTIME = '1'      # '1' realtime, '0' recovered
 QUIET    = False    # True = only the log files + the final summary
 
-#%% ---------------- run ----------------
+# ---------------- run ----------------
 import os, subprocess, sys, threading, time
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed

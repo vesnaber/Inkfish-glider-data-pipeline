@@ -37,7 +37,8 @@ REALTIME = os.environ.get('REALTIME', '1').lower() not in ('0', 'false', 'no')
 #   MIGRATION from the old layout:
 #     - outputs live one level deeper, in <folder>/<glider>/
 #     - sensor_list.txt is now sensor_list_<glider>.txt
-#     - rawnc/<glider>/ is now split into segments/ and merged/
+#     - rawnc/<glider>/ is split into segments/ and merged/
+#     - bathymetry moved into data/bathymetry_xyz/ and data/bathymetry_image/
 #   Easiest migration: config.clear_outputs(rawnc=True) once per glider,
 #   then rerun 01. It reconverts, but from then on it is incremental.
 #   ============================================================
@@ -47,36 +48,130 @@ import numpy as np
 ROOT        = Path(__file__).resolve().parent
 
 # shared across gliders
-DATA        = ROOT / 'data'                      # one subfolder per download
+DATA          = DATA_DIR = ROOT / 'data'     # one subfolder per download
+BATHY_XYZ_DIR = DATA / 'bathymetry_xyz'      # ASCII "lon lat depth" grids,
+                                             # for the 3D terrain
+BATHY_IMG_DIR = DATA / 'bathymetry_image'    # georeferenced image for the map
+                                             # tab, plus a .bounds sidecar
 
 # per-glider inputs (hand-made / written by 00)
 DEPLOYMENT  = ROOT / f'deployment_{GLIDER}.yml'
 SENSORLIST  = ROOT / f'sensor_list_{GLIDER}.txt'
 
 # per-glider outputs
-CACHE       = ROOT / 'cache' / GLIDER            # dbdreader cache; per glider
-                                                 # so parallel runs cannot race
-RAWNC       = ROOT / 'rawnc' / GLIDER            # parent of the two below
-RAWNC_SEG   = RAWNC / 'segments'                 # ARCHIVE: one .nc per binary
-                                                 # segment. Only 01 writes
-                                                 # here, and only ever adds.
-RAWNC_WORK  = RAWNC / '_mergework'               # disposable copy the merge
-                                                 # is allowed to consume
-RAWNC_MERGED = RAWNC / 'merged'                  # merged flight + science
+CACHE       = ROOT / 'cache' / GLIDER        # dbdreader cache; per glider so
+                                             # parallel runs cannot race
+RAWNC       = ROOT / 'rawnc' / GLIDER        # parent of the two below
+RAWNC_SEG   = RAWNC / 'segments'             # ARCHIVE: one .nc per binary
+                                             # segment. Only 01 writes here,
+                                             # and only ever adds.
+RAWNC_WORK  = RAWNC / '_mergework'           # disposable copy the merge is
+                                             # allowed to consume
+RAWNC_MERGED = RAWNC / 'merged'              # merged flight + science
 L0_TS       = ROOT / 'L0-timeseries' / GLIDER
 L0_PROFILES = ROOT / 'L0-profiles' / GLIDER
 L0_GRID     = ROOT / 'L0-gridfiles' / GLIDER
 PLOTS       = ROOT / 'plots' / GLIDER
 HTML        = ROOT / 'interactive' / GLIDER
-STATE       = ROOT / '.state' / GLIDER           # stage fingerprints,
-                                                 # segments.csv, and the
-                                                 # derived *_used files
-for _d in (DATA, CACHE, RAWNC_SEG, RAWNC_MERGED, L0_TS, L0_PROFILES,
-           L0_GRID, PLOTS, HTML, STATE):
+STATE       = ROOT / '.state' / GLIDER       # stage fingerprints,
+                                             # segments.csv, and the derived
+                                             # *_used files
+for _d in (DATA, BATHY_XYZ_DIR, BATHY_IMG_DIR, CACHE, RAWNC_SEG,
+           RAWNC_MERGED, L0_TS, L0_PROFILES, L0_GRID, PLOTS, HTML, STATE):
     _d.mkdir(parents=True, exist_ok=True)
 
 SCISUFFIX    = 'tbd' if REALTIME else 'ebd'
 GLIDERSUFFIX = 'sbd' if REALTIME else 'dbd'
+
+
+#%% ============================================================
+#   bathymetry - optional, shared across gliders, auto-discovered
+#   ------------------------------------------------------------
+#   Nothing here is location-specific: drop files in the folders and they
+#   are found. Everything still works without them - the 3D tab loses its
+#   seabed, the map tab loses its image.
+#   ============================================================
+XYZ_SUFFIXES = ('.xyz', '.txt', '.asc', '.dat')
+IMG_SUFFIXES = ('.png', '.jpg', '.jpeg', '.webp')
+
+
+def find_bathy_xyz(verbose=True):
+    '''First ASCII bathymetry grid in data/bathymetry_xyz/, or None.
+
+    The file is "lon lat depth" per line, whitespace separated, depth
+    negative downward. Any name works. If you keep several, the
+    alphabetically first is used - pass a path explicitly to override.'''
+    hits = sorted(p for p in BATHY_XYZ_DIR.iterdir()
+                  if p.is_file() and p.suffix.lower() in XYZ_SUFFIXES)
+    if not hits:
+        if verbose:
+            print(f'   no bathymetry grid in {BATHY_XYZ_DIR.name}/ '
+                  f'- 3D without terrain')
+        return None
+    if verbose and len(hits) > 1:
+        print(f'   {len(hits)} grids in {BATHY_XYZ_DIR.name}/, '
+              f'using {hits[0].name}')
+    return hits[0]
+
+
+def read_bounds(path):
+    '''Geographic bounds for a map image, from a sidecar next to it.
+
+    Accepted, in order:
+        <image>.bounds.json   {"south":.., "west":.., "north":.., "east":..}
+        <image>.bounds        south west north east   (one line, any spacing)
+        <image>.bounds.txt    same
+
+    Returns (south, west, north, east) or None. World files (.pgw) are NOT
+    read - GUESSING!! that nobody here has one; say so and it can be added.'''
+    import json
+    stem = path.with_suffix('')
+    for cand in (Path(f'{stem}.bounds.json'), Path(f'{stem}.bounds'),
+                 Path(f'{stem}.bounds.txt')):
+        if not cand.exists():
+            continue
+        txt = cand.read_text().strip()
+        try:
+            if cand.suffix == '.json' or txt.startswith('{'):
+                d = json.loads(txt)
+                return (float(d['south']), float(d['west']),
+                        float(d['north']), float(d['east']))
+            nums = [float(x) for x in txt.replace(',', ' ').split()]
+            if len(nums) >= 4:
+                return tuple(nums[:4])
+            print(f'   {cand.name}: need 4 numbers, found {len(nums)}')
+        except Exception as e:
+            print(f'   could not read {cand.name}: {e}')
+    return None
+
+
+def bathy_image(verbose=True):
+    '''(path, (south, west, north, east)) for the map tab, or (None, None).
+
+    Looks for one image in data/bathymetry_image/ plus a bounds sidecar with
+    the same stem. Without the sidecar the image cannot be placed on the map,
+    so it is skipped with a clear message rather than drawn in the wrong
+    spot.'''
+    hits = sorted(p for p in BATHY_IMG_DIR.iterdir()
+                  if p.is_file() and p.suffix.lower() in IMG_SUFFIXES)
+    if not hits:
+        if verbose:
+            print(f'   no image in {BATHY_IMG_DIR.name}/ '
+                  f'- map without bathymetry')
+        return None, None
+    img = hits[0]
+    if verbose and len(hits) > 1:
+        print(f'   {len(hits)} images in {BATHY_IMG_DIR.name}/, '
+              f'using {img.name}')
+
+    bounds = read_bounds(img)
+    if bounds is None:
+        print(f'   {img.name} has no bounds sidecar - skipping it.\n'
+              f'   Create {img.stem}.bounds next to it, one line:\n'
+              f'       south west north east\n'
+              f'   e.g.  11.911967 -69.244978 12.451538 -68.610832')
+        return None, None
+    return img, bounds
 
 
 #%% ============================================================
@@ -428,6 +523,13 @@ if __name__ == '__main__':
         print(f'\ngliders configured here: {", ".join(_known)}')
         print(f'  run another one with:  '
               f'GLIDER={_known[0]} python 01_process_to_nc.py')
+
+    print('\nbathymetry (optional):')
+    _x = find_bathy_xyz()
+    print(f'  3D terrain : {_x.name if _x else "none"}')
+    _i, _b = bathy_image()
+    print(f'  map image  : {_i.name if _i else "none"}'
+          f'{f"  bounds {_b}" if _b else ""}')
 
     all_data_dirs()
     segment_table()

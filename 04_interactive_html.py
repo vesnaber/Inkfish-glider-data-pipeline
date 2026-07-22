@@ -8,12 +8,14 @@ One self-contained web page per glider (no server - just open the html).
               everything between them is interpolated. Gaps longer than
               MAX_GAP_HOURS stay empty. Each panel zooms on its own.
   SCIENCE   - scatter (pick x / y / colour) + a T-S diagram with potential
-              density contours, both above a depth-vs-time context strip.
-  GLIDER    - the same for the engineering variables. "+ glider depth"
-              overlays the dive profile on the scatter itself.
-  3D        - multibeam bathymetry as terrain with the section hung along
-              the track as a curtain. Unmeasured parts are transparent.
-  MAP       - bathymetry image + island outline + track + last position.
+              density isolines.
+  GLIDER    - engineering variables stacked against time, measured over
+              commanded, with the dive phases shaded.
+  3D        - bathymetry as terrain with the section hung along the track as
+              a curtain. Unmeasured parts are transparent. The slider picks
+              a time RANGE.
+  MAP       - bathymetry image + track + depth-averaged current arrows,
+              and a current rose.
 
     python 04_interactive_html.py
 '''
@@ -66,11 +68,10 @@ REFINE_MINUTES = 5          # target spacing of the interpolated columns.
                             # Smaller = smoother contours + bigger file.
                             # None/0 = one column per real profile.
 
-SECTION_MAX_COLS = 1500     # hard cap on columns per panel, applied after
-                            # REFINE_MINUTES. This is the main file-size and
-                            # browser-speed guard: go.Contour runs marching
-                            # squares in JS, so a few thousand columns times
-                            # ~100 depth bins is already slow. Raise carefully.
+SECTION_MAX_COLS = 600      # hard cap on columns per panel, applied after
+                            # REFINE_MINUTES. go.Contour runs marching squares
+                            # in JS, so a few thousand columns times ~100 depth
+                            # bins is already slow. Raise carefully.
 
 # ---- section rendering --------------------------------------------------
 N_LEVELS = 20               # number of filled colour bands (also the number
@@ -104,9 +105,6 @@ SECTION_DEPTH_STRIDE = 4    # keep every Nth depth bin in the section panels.
                             # visually identical, 4x smaller. This is the
                             # single biggest file-size lever.
 
-SECTION_MAX_COLS = 600      # was 1500 (selkie used 1103). 600 columns over a
-                            # 4-day deployment is ~10 min per column.
-
 SECTION_DECIMALS = {        # JSON stores these as text: every decimal place
     'temperature': 3,       # is a character x 1.2M values. Instrument
     'salinity': 3,          # precision is well below these already.
@@ -118,10 +116,6 @@ SECTION_DECIMALS = {        # JSON stores these as text: every decimal place
 }
 SECTION_DECIMALS_DEFAULT = 3
 
-N_TIME_WINDOWS = 3          # was 6. Each slider step stores a full copy of
-                            # the curtain geometry (X, Y, Z, F) - this is the
-                            # 5.2 MB "sliders" column.
-
 # ---- colours ------------------------------------------------------------
 CMAP_PER_VAR = {'temperature': 'thermal', 'conductivity': 'haline',
                 'salinity': 'haline', 'potential_density': 'dense',
@@ -131,60 +125,90 @@ CMAP_PER_VAR = {'temperature': 'thermal', 'conductivity': 'haline',
                             # cmocean name per variable; anything not listed
                             # falls back to 'thermal'. Needs `cmocean`,
                             # otherwise everything becomes Viridis.
-COLOUR_SCHEMES = ['per variable (cmocean)', 'thermal', 'haline', 'dense',
-                  'deep', 'balance', 'Viridis', 'Plasma', 'Turbo']
-                            # entries of the in-page "colours" dropdown.
 CLIM_PCT = (2, 98)          # percentile clipping for every colour limit.
                             # (0, 100) = full range, outliers wash it out.
-MARKER_SIZE = 6             # scatter markers (Science / Glider / T-S)
+MARKER_SIZE = 6             # scatter markers (Science / T-S)
 MARKER_SIZE_3D = 3          # markers in the 3D point fallback
 
-# ---- Science / Glider tabs ---------------------------------------------
+MARKER_OUTLINE_WIDTH = 0.4  # thin dark ring around every scatter marker.
+                            # Several cmocean maps (deep, algae, solar) start
+                            # near white, so their lightest values vanish into
+                            # the page. The ring keeps every point visible
+                            # whatever the colourmap. 0 = no ring.
+MARKER_OUTLINE_COLOUR = 'rgba(50,50,50,0.55)'
+SCATTER_BG = '#f7f8f9'      # faintly tinted plot background, same reason.
+                            # '#ffffff' for pure white.
+
+# ---- Science tab (scatter) ---------------------------------------------
 SCIENCE_VARS = ['temperature', 'salinity', 'potential_density', 'conductivity',
                 'chlorophyll', 'cdom', 'backscatter_700',
                 'oxygen_concentration', 'par', 'depth', 'time',
                 'longitude', 'latitude']
-GLIDER_VARS  = ['depth', 'pitch', 'roll', 'heading', 'battery_position',
-                'oil_volume', 'fin', 'altitude', 'commanded_heading',
-                'commanded_fin', 'time', 'longitude', 'latitude']
-                            # choices in the x / y / colour dropdowns.
 DEFAULT_SCIENCE = ('temperature', 'depth')   # (x, y) shown on first load
-DEFAULT_GLIDER  = ('time', 'depth')
-
-SHOW_DEPTH_STRIP = True     # thin depth-vs-time panel under every scatter, so
-                            # the dive pattern is visible whatever the axes are.
-DEPTH_STRIP_FRAC = 0.18     # its share of the figure height
-DEPTH_STRIP_COLOUR = 'rgba(60,60,60,0.75)'
-DEPTH_STRIP_WIDTH = 0.8
-
-DEPTH_OVERLAY = True        # adds an "+ glider depth" toggle button that draws
-                            # the dive profile ON the scatter itself, on a
-                            # second (right, reversed) y axis. Off on load,
-                            # click the button to show it. It is plotted
-                            # against TIME, so it only lines up when x = time.
-DEPTH_OVERLAY_COLOUR = "#c0d5d7"
-DEPTH_OVERLAY_WIDTH = 1.0
+SCIENCE_HEIGHT = 800
+                            # The "colour" dropdown picks which VARIABLE tints
+                            # the markers; its colourmap follows from
+                            # CMAP_PER_VAR automatically.
 
 # ---- T-S diagram --------------------------------------------------------
 TS_DENSITY_CONTOURS = True  # sigma0 isolines in the background (needs gsw)
 TS_N_DENSITY_LINES = 12     # roughly how many isolines
 TS_COLOUR_BY = 'depth'      # variable used to colour the T-S points
+TS_HEIGHT = 780
+
+# ---- Glider tab ---------------------------------------------------------
+# One stacked panel per variable, x is always time, all panels share the
+# zoom. Where a "commanded_<var>" exists it is drawn UNDER the measured one,
+# so the two are directly comparable and the measured trace always wins.
+GLIDER_Y_VARS = ['pitch', 'roll', 'heading', 'fin', 'battery_position',
+                 'oil_volume', 'altitude']
+GLIDER_PAIR_PREFIX = 'commanded_'
+
+GLIDER_ROW_HEIGHT = 150     # px per panel - short on purpose, the point is
+                            # to scan many variables at once
+GLIDER_DEPTH_ROW_HEIGHT = 190   # the depth panel at the top, a bit taller
+
+GLIDER_MEASURED_COLOUR  = "#ff7e1c"   # light orange - what the glider did
+GLIDER_COMMANDED_COLOUR = "#444444"   # dark - what it was told to do
+GLIDER_LINE_WIDTH = 1.2
+GLIDER_MARKER_SIZE = 3      # 0 = lines only
+
+# dive phases: grey band + white depth line while descending,
+# white band + grey depth line while ascending
+SHOW_DIVE_SHADING = True
+DIVE_SHADE_COLOUR = 'rgba(0,0,0,0.075)'
+DEPTH_DOWN_COLOUR = '#ffffff'         # depth line inside the grey bands
+DEPTH_UP_COLOUR   = "#bcb9b9"         # depth line inside the white bands
+DEPTH_LINE_WIDTH = 1.4
+DIVE_MIN_MINUTES = 4        # ignore direction flips shorter than this - noise
+                            # and brief inflections, not real phases
+DIVE_SMOOTH_N = 9           # samples in the running mean applied to depth
+                            # before taking its sign
 
 # ---- 3D tab -------------------------------------------------------------
-BATHY_XYZ = config.ROOT / 'data' / 'Pelagia_bathymetry' / \
-            'Bathymetry-Curacao_64PE430-500-529_30m-grid_ASCII.XYZ.xyz'
-                            # ASCII "lon lat depth", depth negative downward.
-BATHY_STRIDE = 4            # decimate the 30 m grid (4 -> ~120 m). Lower =
-                            # sharper seabed, much heavier page.
+BATHY_XYZ = None            # None = use the first grid in
+                            # data/bathymetry_xyz/. Or a Path to force one.
+                            # File is ASCII "lon lat depth" per line, depth
+                            # negative downward. No file -> 3D without seabed.
+BATHY_STRIDE = 4            # decimate the grid (4 -> every 4th point). Lower
+                            # = sharper seabed, much heavier page.
 BATHY_PAD_DEG = 0.02        # crop the terrain to the track bbox + this pad.
                             # None = keep the whole file (heavy!).
 BATHY_CMAP = 'deep'         # cmocean scale for the seabed
 BATHY_CACHE = True          # cache the gridded terrain as .npz next to the
-                            # xyz; delete the .npz after changing BATHY_STRIDE.
+                            # source; delete it after changing BATHY_STRIDE.
 SHOW_TERRAIN = True         # False = curtain only, builds much faster
 Z_EXAGGERATION = 0.55       # vertical stretch of the 3D scene
-N_TIME_WINDOWS = 6          # slider steps for the curtain (+ 'whole period')
-HEIGHT_3D = 900             # px
+
+N_TIME_WINDOWS = 3          # the deployment is cut into this many chunks and
+                            # the slider offers every contiguous RANGE of
+                            # them (chunk 2 only, chunks 2-3, and so on).
+                            # Steps = N*(N+1)/2, and EACH step stores its own
+                            # copy of the curtain geometry:
+                            #   3 -> 6 steps, 4 -> 10, 5 -> 15.
+                            # This is the main size driver of the 3D tab.
+
+HEIGHT_3D = 860             # px
 SCENE_TRANSPARENT = True    # no grey walls behind the 3D scene - the axis
                             # panes become transparent and the page background
                             # shows through.
@@ -192,11 +216,8 @@ SCENE_GRID_COLOUR = 'rgba(120,120,120,0.15)'   # faint 3D gridlines; use
                             # 'rgba(0,0,0,0)' to hide them completely.
 
 # ---- map tab ------------------------------------------------------------
-COASTLINE_SHP = config.ROOT / 'data' / 'cuw_adm0' / 'CUW_adm0.shp'
-BATHY_PNG     = config.ROOT / 'data' / 'bathymetry_PE500.png'
-BATHY_BOUNDS  = (11.911966662, -69.244978161, 12.451537991, -68.610831513)
-                            # (south, west, north, east) of BATHY_PNG; the png
-                            # is base64-embedded, so it drives the file size.
+# The bathymetry image and its corner coordinates come from
+# data/bathymetry_image/ - see config.bathy_image(). Nothing to set here.
 BATHY_OPACITY = 0.7
 MAP_STYLE = 'carto-positron'   # any style not needing a token, or 'white-bg'
 MAP_ZOOM = 9
@@ -214,10 +235,9 @@ CURRENT_SKIP_FIRST = 10     # drop the first N intervals. Deployment and the
 
 CURRENT_ARROW_SCALE = 0.10  # DEGREES of latitude drawn per 1 m/s. Purely
                             # visual - raise until the arrows read well at
-                            # your usual zoom. (0.10 at 0.3 m/s = 0.03 deg,
-                            # about 3 km.) The east component is divided by
-                            # cos(lat) so the arrow points the true way on a
-                            # Mercator basemap.
+                            # your usual zoom. The east component is divided
+                            # by cos(lat) so the arrow points the true way on
+                            # a Mercator basemap.
 CURRENT_ARROW_COLOUR = 'red'
 CURRENT_ARROW_WIDTH = 2
 CURRENT_HEAD_FRAC = 0.25    # arrowhead length as a fraction of the shaft
@@ -235,6 +255,8 @@ TRACK_WIDTH = 2
 SHOW_TRACK_POINTS = False   # every sample as a faint dot as well
 SURFACE_MARKER_SIZE = 8
 SURFACE_CMAP = 'Viridis'    # surfacings coloured by time order
+SHOW_SURFACE_TIMEBAR = True # small colourbar showing what the surfacing
+                            # colours mean, dated at both ends
 START_END_SIZE = 18
 
 SHOW_CURRENT_ROSE = True    # a "current rose" sub-tab next to the map
@@ -251,7 +273,6 @@ from pathlib import Path
 import base64
 import bisect
 import datetime as dt
-import json
 
 import numpy as np
 import xarray as xr
@@ -483,17 +504,16 @@ def sections_fig(grid):
                         subplot_titles=[f"{v} [{grid[v].attrs.get('units','')}]"
                                         for v in have])
 
-    fill_idx, fill_scales, n_traces = [], [], 0
-
     for k, v in enumerate(have):
         A = grid[v].values
         if FILL_GAPS:
             A = fill(A, times)
         lo, hi = clim(A)
-        Z = np.round(interp_to(A, times, tf), 4)
+        Z = interp_to(A, times, tf)
         Z, depths = crop_empty_rows(Z, grid.depth.values)
         if SECTION_DEPTH_STRIDE > 1:
-            Z, depths = Z[::SECTION_DEPTH_STRIDE], depths[::SECTION_DEPTH_STRIDE]
+            Z = Z[::SECTION_DEPTH_STRIDE]
+            depths = depths[::SECTION_DEPTH_STRIDE]
         Z = np.round(Z, SECTION_DECIMALS.get(v, SECTION_DECIMALS_DEFAULT))
         cs = band_scale(v)
         bar = dict(len=1 / len(have) - 0.03, thickness=11,
@@ -508,7 +528,6 @@ def sections_fig(grid):
                 hovertemplate='%{x|%d %b %H:%M}<br>%{y:.0f} m<br>'
                               '%{z:.3f}<extra></extra>'),
                 row=k + 1, col=1)
-            n_traces += 1
         else:
             fig.add_trace(go.Contour(
                 z=Z, x=xdt, y=depths,
@@ -523,44 +542,25 @@ def sections_fig(grid):
                 hovertemplate='%{x|%d %b %H:%M}<br>%{y:.0f} m<br>'
                               '%{z:.3f}<extra></extra>'),
                 row=k + 1, col=1)
-            fill_idx.append(n_traces)     # only these get recoloured
-            fill_scales.append(cs)
-            n_traces += 1
 
         if SHOW_PROFILE_LINES:
             tr = profile_lines(A, times, grid.depth.values)
             if tr is not None:
                 fig.add_trace(tr, row=k + 1, col=1)
-                n_traces += 1
 
         fig.update_yaxes(autorange='reversed', title_text='depth [m]',
                          row=k + 1, col=1)
         fig.update_xaxes(showticklabels=True, row=k + 1, col=1)
 
-    buttons = []
-    for s in COLOUR_SCHEMES:
-        if s.startswith('per variable'):
-            cs_list = fill_scales
-        else:
-            base = scale(s) if SMOOTH_SECTIONS else stepped(scale(s))
-            cs_list = [base] * len(fill_idx)
-        buttons.append(dict(label=s, method='restyle',
-                            args=[{'colorscale': cs_list}, fill_idx]))
-
     fig.update_layout(
-        updatemenus=[dict(buttons=buttons, direction='down', showactive=True,
-                          x=0, xanchor='left', y=1.03, yanchor='bottom')],
-        annotations=list(fig.layout.annotations) +
-        [dict(text='colours', x=-0.005, y=1.04, xref='paper', yref='paper',
-              showarrow=False, xanchor='right')],
-        height=SECTION_ROW_HEIGHT * len(have) + 110,
+        height=SECTION_ROW_HEIGHT * len(have) + 80,
         template='plotly_white', dragmode='zoom',
-        margin=dict(t=100, l=65, r=20, b=45))
+        margin=dict(t=60, l=65, r=20, b=45))
     return fig
 
 
 #%% ============================================================
-#   TABS 2/3 - scatter (+ depth context strip)
+#   TAB 2 - Science scatter
 #   ============================================================
 def column(ts, name):
     if name == 'time':
@@ -569,33 +569,10 @@ def column(ts, name):
     return [None if not np.isfinite(x) else round(float(x), 6) for x in v]
 
 
-def depth_strip_trace(ts):
-    """Faint depth-vs-time line in the panel under the scatter, so the dive
-    pattern is visible whatever the scatter axes are set to."""
-    if 'depth' not in ts:
-        return None
-    return go.Scattergl(
-        x=[str(t)[:19] for t in ts.time.values],
-        y=column(ts, 'depth'), mode='lines',
-        line=dict(width=DEPTH_STRIP_WIDTH, color=DEPTH_STRIP_COLOUR),
-        name='depth', showlegend=False,
-        hovertemplate='%{x}<br>%{y:.1f} m<extra></extra>')
-
-
-def depth_overlay_trace(ts):
-    """Dive profile drawn ON the scatter itself, on the secondary (right,
-    reversed) y axis. Hidden until the "+ glider depth" button is clicked."""
-    if 'depth' not in ts:
-        return None
-    return go.Scattergl(
-        x=[str(t)[:19] for t in ts.time.values],
-        y=column(ts, 'depth'), mode='lines',
-        line=dict(width=DEPTH_OVERLAY_WIDTH, color=DEPTH_OVERLAY_COLOUR),
-        name='glider depth', showlegend=False, visible=False,
-        hovertemplate='%{x}<br>%{y:.1f} m<extra>glider depth</extra>')
-
-
 def scatter_fig(ts, varlist, default, title):
+    '''Scatter with three dropdowns: x, y, and which variable colours the
+    markers. The colourmap follows from CMAP_PER_VAR, so there is no separate
+    "scheme" control to keep in sync.'''
     have = [v for v in varlist if v == 'time' or v in ts]
     if not have:
         return None
@@ -605,104 +582,48 @@ def scatter_fig(ts, varlist, default, title):
     cd = next((v for v in ('temperature', 'depth') if v in have), have[0])
     num = lambda v: [np.nan if q is None else q for q in cols[v]]
 
-    has_depth = 'depth' in ts
-    strip = SHOW_DEPTH_STRIP and has_depth
-    overlay = DEPTH_OVERLAY and has_depth
-
-    # a secondary y axis on row 1 is what carries the depth overlay
-    if strip:
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=False,
-                            vertical_spacing=0.09,
-                            row_heights=[1 - DEPTH_STRIP_FRAC, DEPTH_STRIP_FRAC],
-                            specs=[[{'secondary_y': True}], [{}]],
-                            subplot_titles=[None, 'dive pattern (depth vs time)'])
-    elif overlay:
-        fig = make_subplots(rows=1, cols=1, specs=[[{'secondary_y': True}]])
-    else:
-        fig = make_subplots(rows=1, cols=1)
-
-    main = go.Scattergl(
+    fig = go.Figure(go.Scattergl(
         x=cols[xd], y=cols[yd], mode='markers',
         marker=dict(size=MARKER_SIZE, color=num(cd), colorscale=scale_for(cd),
-                    showscale=True, opacity=0.85, line=dict(width=0),
-                    colorbar=dict(title=cd, thickness=12,
-                                  len=(1 - DEPTH_STRIP_FRAC) if strip else 1,
-                                  y=1, yanchor='top')),
-        hovertemplate='%{x}<br>%{y}<extra></extra>', showlegend=False)
-    fig.add_trace(main, row=1, col=1)          # trace 0 - the dropdowns target it
+                    showscale=True, opacity=0.9,
+                    line=dict(width=MARKER_OUTLINE_WIDTH,
+                              color=MARKER_OUTLINE_COLOUR),
+                    colorbar=dict(title=cd, thickness=12)),
+        hovertemplate='%{x}<br>%{y}<extra></extra>', showlegend=False))
 
-    ovl_i = None
-    if overlay:
-        tr = depth_overlay_trace(ts)
-        if tr is not None:
-            fig.add_trace(tr, row=1, col=1, secondary_y=True)
-            ovl_i = len(fig.data) - 1
-            fig.update_yaxes(title_text='glider depth [m]', autorange='reversed',
-                             showgrid=False, secondary_y=True, row=1, col=1)
-
-    if strip:
-        tr = depth_strip_trace(ts)
-        if tr is not None:
-            fig.add_trace(tr, row=2, col=1)
-        fig.update_yaxes(autorange='reversed', title_text='depth [m]',
-                         row=2, col=1)
-        fig.update_xaxes(title_text='time', row=2, col=1)
-
-    # the dropdowns must restyle trace 0 (the scatter) only
     def menu(kind, active, x):
         b = []
         for v in have:
             if kind == 'x':
-                args = [{'x': [cols[v]]}, {'xaxis.title.text': v}, [0]]
+                args = [{'x': [cols[v]]}, {'xaxis.title.text': v}]
             elif kind == 'y':
                 args = [{'y': [cols[v]]},
                         {'yaxis.title.text': v,
-                         'yaxis.autorange': 'reversed' if v == 'depth' else True},
-                        [0]]
+                         'yaxis.autorange': 'reversed' if v == 'depth' else True}]
             else:
                 args = [{'marker.color': [num(v)],
                          'marker.colorscale': [scale_for(v)],
-                         'marker.colorbar.title.text': v}, {}, [0]]
+                         'marker.colorbar.title.text': v}, {}]
             b.append(dict(label=v, method='update', args=args))
         return dict(buttons=b, direction='down', showactive=True, x=x,
-                    xanchor='left', y=1.11, yanchor='top',
+                    xanchor='left', y=1.10, yanchor='top',
                     active=have.index(active))
 
-    sch = [dict(label=s, method='restyle',
-                args=[{'marker.colorscale': [scale_for(cd) if s.startswith('per')
-                                             else scale(s)]}, [0]])
-           for s in COLOUR_SCHEMES]
-
-    menus = [menu('x', xd, 0.0), menu('y', yd, 0.20), menu('c', cd, 0.40),
-             dict(buttons=sch, direction='down', showactive=True,
-                  x=0.62, xanchor='left', y=1.11, yanchor='top')]
-    if ovl_i is not None:
-        # one highlighted toggle: click = show, click again = hide
-        menus.append(dict(
-            type='buttons', direction='left', showactive=True,
-            x=0.84, xanchor='left', y=1.11, yanchor='top',
-            bgcolor='#4da3ff', bordercolor='#4da3ff',
-            font=dict(color='#ffffff', size=12.5),
-            buttons=[dict(label='+ glider depth', method='restyle',
-                          args=[{'visible': True}, [ovl_i]],
-                          args2=[{'visible': False}, [ovl_i]])]))
-
     fig.update_layout(
-        updatemenus=menus,
-        annotations=list(fig.layout.annotations) +
-        [dict(text=t, x=p, y=1.13, xref='paper', yref='paper',
-              showarrow=False, xanchor='right')
-         for t, p in (('x', -0.005), ('y', 0.195), ('colour', 0.395),
-                      ('scheme', 0.615))],
-        height=860, template='plotly_white',
-        margin=dict(t=105, l=60, r=70 if ovl_i is not None else 20, b=50),
-        title=title)
-    fig.update_xaxes(title_text=xd, row=1, col=1)
-    fig.update_yaxes(title_text=yd, row=1, col=1,
-                     **(dict(secondary_y=False) if overlay else {}))
+        updatemenus=[menu('x', xd, 0.0), menu('y', yd, 0.22),
+                     menu('c', cd, 0.44)],
+        annotations=[dict(text=t, x=p, y=1.12, xref='paper', yref='paper',
+                          showarrow=False, xanchor='right')
+                     for t, p in (('x', -0.005), ('y', 0.215),
+                                  ('colour', 0.435))],
+        height=SCIENCE_HEIGHT, template='plotly_white',
+        plot_bgcolor=SCATTER_BG,
+        margin=dict(t=95, l=60, r=20, b=50), title='')
+        
+    fig.update_xaxes(title_text=xd)
+    fig.update_yaxes(title_text=yd)
     if yd == 'depth':
-        fig.update_yaxes(autorange='reversed', row=1, col=1,
-                         **(dict(secondary_y=False) if overlay else {}))
+        fig.update_yaxes(autorange='reversed')
     return fig
 
 
@@ -710,7 +631,12 @@ def scatter_fig(ts, varlist, default, title):
 #   T-S diagram
 #   ============================================================
 def ts_fig(ts):
-    '''Salinity on x, temperature on y, potential density as isolines.'''
+    '''Salinity on x, temperature on y, potential density as isolines.
+
+    Markers get a thin dark ring: the depth colourmap starts near white, so
+    without it the shallowest points disappear into the page. The sigma0
+    legend entry sits above the plot so it cannot land on the colourbar.
+    '''
     if 'salinity' not in ts or 'temperature' not in ts:
         print('   no salinity/temperature - skipping the T-S diagram')
         return None
@@ -744,7 +670,8 @@ def ts_fig(ts):
                               coloring='none', showlines=True, showlabels=True,
                               labelfont=dict(size=10, color='rgba(0,0,0,0.6)')),
                 line=dict(width=0.7, color='rgba(0,0,0,0.45)'),
-                showscale=False, hoverinfo='skip', name='sigma0'))
+                showscale=False, hoverinfo='skip', name='sigma0',
+                showlegend=True))
         except ImportError:
             print('   gsw not installed - T-S without density contours')
 
@@ -752,19 +679,202 @@ def ts_fig(ts):
     C = np.asarray(ts[cvar].values, float)[ok] if cvar in ts else None
     fig.add_trace(go.Scattergl(
         x=S, y=T, mode='markers',
-        marker=dict(size=MARKER_SIZE, opacity=0.8, line=dict(width=0),
+        marker=dict(size=MARKER_SIZE, opacity=0.9,
+                    line=dict(width=MARKER_OUTLINE_WIDTH,
+                              color=MARKER_OUTLINE_COLOUR),
                     color=C if C is not None else 'steelblue',
                     colorscale=scale_for(cvar) if C is not None else None,
                     showscale=C is not None,
-                    colorbar=dict(title=cvar, thickness=12)),
+                    colorbar=dict(title=cvar, thickness=12,
+                                  len=0.82, y=0.42, yanchor='middle')),
         hovertemplate='S %{x:.3f}<br>T %{y:.3f}<extra></extra>',
         showlegend=False))
 
     fig.update_layout(
         xaxis_title='salinity', yaxis_title='temperature [degC]',
-        height=780, template='plotly_white',
-        margin=dict(t=60, l=60, r=20, b=50),
+        height=TS_HEIGHT, template='plotly_white',
+        plot_bgcolor=SCATTER_BG,
+        margin=dict(t=95, l=60, r=20, b=50),
+        legend=dict(orientation='h', y=1.06, yanchor='bottom',
+                    x=1, xanchor='right', font=dict(size=11)),
         title='T-S diagram (thin lines = potential density sigma0)')
+    return fig
+
+
+#%% ============================================================
+#   TAB 3 - Glider: engineering variables stacked against time
+#   ============================================================
+def dive_phases(ts, min_minutes=DIVE_MIN_MINUTES, smooth_n=DIVE_SMOOTH_N):
+    '''-> [(t0, t1, 'down'|'up')] from the sign of d(depth)/dt.
+
+    Depth is smoothed first, then runs shorter than min_minutes are absorbed
+    into the run before them, so a moment of level flight mid-descent does
+    not chop the shading into slivers.'''
+    if 'depth' not in ts:
+        return []
+    d = np.asarray(ts.depth.values, float)
+    t = np.asarray(ts.time.values)
+    ok = np.isfinite(d)
+    if ok.sum() < 3:
+        return []
+    d, t = d[ok], t[ok]
+
+    if smooth_n > 1 and d.size > smooth_n:
+        d = np.convolve(d, np.ones(smooth_n) / smooth_n, mode='same')
+
+    s = np.sign(np.diff(d))
+    nz = s != 0
+    if not nz.any():
+        return []
+    carry = np.where(nz, np.arange(s.size), 0)   # forward-fill the zeros
+    np.maximum.accumulate(carry, out=carry)
+    s = s[carry]
+
+    cuts = np.where(np.diff(s) != 0)[0] + 1
+    runs = list(zip(np.r_[0, cuts], np.r_[cuts, s.size]))
+
+    merged = []
+    for a, b in runs:
+        mins = (t[min(b, t.size - 1)] - t[a]) / np.timedelta64(1, 'm')
+        if mins < min_minutes and merged:
+            merged[-1][1] = b                    # too short: absorb it
+        else:
+            merged.append([a, b, s[a]])
+    out = []                                     # join same-direction runs
+    for a, b, sign in merged:
+        if out and out[-1][2] == sign:
+            out[-1][1] = b
+        else:
+            out.append([a, b, sign])
+
+    return [(t[a], t[min(b, t.size - 1)], 'down' if sign > 0 else 'up')
+            for a, b, sign in out]
+
+
+def _nz(a, dec=3):
+    '''numpy array -> JSON-friendly list, NaN as None, rounded'''
+    a = np.asarray(a, float)
+    return [None if not np.isfinite(x) else round(float(x), dec) for x in a]
+
+
+def glider_fig(ts):
+    '''Engineering variables stacked against time, one short panel each,
+    all sharing the zoom - so an unusual moment is visible in a glance
+    rather than found by clicking through a dropdown.
+
+    Per panel: commanded is drawn first and measured second, so measured is
+    always the trace on top. The depth panel at the top splits the dive into
+    phases - grey band with a white line while descending, white band with a
+    grey line while ascending - and every panel carries the same bands.
+    '''
+    if 'depth' not in ts:
+        print('   no depth - skipping the Glider tab')
+        return None
+
+    groups = [(v, GLIDER_PAIR_PREFIX + v
+               if GLIDER_PAIR_PREFIX + v in ts else None)
+              for v in GLIDER_Y_VARS if v in ts]
+    if not groups:
+        print('   no engineering variables - skipping the Glider tab')
+        return None
+
+    t = np.asarray(ts.time.values)
+    phases = dive_phases(ts)
+    n_down = sum(1 for *_, d in phases if d == 'down')
+    print(f'   glider: {len(groups)} panels, {len(phases)} dive phases '
+          f'({n_down} descending)')
+
+    rows = len(groups) + 1
+    heights = [GLIDER_DEPTH_ROW_HEIGHT] + [GLIDER_ROW_HEIGHT] * len(groups)
+    total = sum(heights)
+    titles = ['depth [m]'] + [
+        f"{v} [{ts[v].attrs.get('units', '')}]" +
+        ('   (dark = commanded)' if cmd else '')
+        for v, cmd in groups]
+
+    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True,
+                        vertical_spacing=min(0.02, 0.8 / max(rows - 1, 1)),
+                        row_heights=[h / total for h in heights],
+                        subplot_titles=titles)
+
+    # ---- depth panel: the line changes colour with the dive phase --------
+    d = np.asarray(ts.depth.values, float)
+    down = np.full(d.size, np.nan)
+    up = np.full(d.size, np.nan)
+    for a, b, direction in phases:
+        m = (t >= a) & (t <= b)
+        if direction == 'down':
+            down[m] = d[m]
+        else:
+            up[m] = d[m]
+    if not phases:                       # no phases found: draw it plainly
+        up = d
+
+    for arr, colour, label in ((up, DEPTH_UP_COLOUR, 'ascending'),
+                               (down, DEPTH_DOWN_COLOUR, 'descending')):
+        fig.add_trace(go.Scattergl(
+            x=t, y=_nz(arr, 2), mode='lines',
+            line=dict(width=DEPTH_LINE_WIDTH, color=colour),
+            name=label, showlegend=False, connectgaps=False,
+            hovertemplate='%{x|%d %b %H:%M}<br>%{y:.1f} m'
+                          f'<extra>{label}</extra>'),
+            row=1, col=1)
+
+    # ---- one panel per variable -----------------------------------------
+    for k, (v, cmd) in enumerate(groups):
+        r = k + 2
+        first = (k == 0)                 # legend entries only once
+
+        if cmd:                          # commanded FIRST -> drawn underneath
+            fig.add_trace(go.Scattergl(
+                x=t, y=_nz(ts[cmd].values), mode='lines',
+                line=dict(width=GLIDER_LINE_WIDTH,
+                          color=GLIDER_COMMANDED_COLOUR),
+                name='commanded', legendgroup='commanded',
+                showlegend=first,
+                hovertemplate='%{x|%d %b %H:%M}<br>%{y}'
+                              f'<extra>{cmd}</extra>'), row=r, col=1)
+
+        fig.add_trace(go.Scattergl(
+            x=t, y=_nz(ts[v].values),
+            mode='lines+markers' if GLIDER_MARKER_SIZE else 'lines',
+            line=dict(width=GLIDER_LINE_WIDTH,
+                      color=GLIDER_MEASURED_COLOUR),
+            marker=dict(size=GLIDER_MARKER_SIZE,
+                        color=GLIDER_MEASURED_COLOUR),
+            name='measured', legendgroup='measured', showlegend=first,
+            hovertemplate='%{x|%d %b %H:%M}<br>%{y}'
+                          f'<extra>{v}</extra>'), row=r, col=1)
+
+        fig.update_yaxes(title_text='', row=r, col=1)
+
+    # ---- dive shading on every panel ------------------------------------
+    # x0/x1 must be ISO STRINGS: numpy datetime64 in a layout shape does not
+    # survive serialisation.
+    if SHOW_DIVE_SHADING:
+        for a, b, direction in phases:
+            if direction != 'down':
+                continue                 # ascents are the page background
+            x0 = np.datetime_as_string(a, unit='s')
+            x1 = np.datetime_as_string(b, unit='s')
+            for r in range(1, rows + 1):
+                fig.add_shape(type='rect', x0=x0, x1=x1, y0=0, y1=1,
+                              yref='y domain', fillcolor=DIVE_SHADE_COLOUR,
+                              line_width=0, layer='below', row=r, col=1)
+
+    fig.update_yaxes(autorange='reversed', title_text='depth [m]',
+                     row=1, col=1)
+    fig.update_xaxes(title_text='time', row=rows, col=1)
+    for ann in fig.layout.annotations:   # subplot titles, left-aligned
+        ann.update(x=0, xanchor='left', font=dict(size=12.5))
+
+    fig.update_layout(
+        height=total + 130, template='plotly_white',
+        margin=dict(t=90, l=65, r=20, b=45),
+        legend=dict(orientation='h', y=1.035, x=0, xanchor='left'),
+        hovermode='x unified', dragmode='zoom',
+        title='Orange = measured, dark = commanded | '
+              'grey bands = descending, white = ascending')
     return fig
 
 
@@ -773,11 +883,11 @@ def ts_fig(ts):
 #   ============================================================
 def load_bathy_terrain(path=BATHY_XYZ, stride=BATHY_STRIDE,
                        bbox=None, pad=BATHY_PAD_DEG):
-    '''Read the ASCII "lon lat depth" grid and reshape it to a regular 2D
-    array. Cached as .npz next to the source.'''
-    path = Path(path)
-    if not path.exists():
-        print(f'   no {path.name} - 3D without terrain')
+    '''Read an ASCII "lon lat depth" grid and reshape it to a regular 2D
+    array. path=None -> whatever is in data/bathymetry_xyz/. Cached as .npz
+    next to the source.'''
+    path = Path(path) if path else config.find_bathy_xyz()
+    if path is None or not path.exists():
         return None
     cache = path.with_suffix(f'.grid{stride}.npz')
     if BATHY_CACHE and cache.exists():
@@ -863,10 +973,31 @@ def masked_curtain(lon, lat, z, F, keep):
     return X, Y, Z, f
 
 
-def _wlabel(a, b):
-    f = '%d %b %H:%M'
-    return (dt.datetime.utcfromtimestamp(float(a)).strftime(f) + '  ->  ' +
-            dt.datetime.utcfromtimestamp(float(b)).strftime(f))
+def _stamp(x):
+    return dt.datetime.utcfromtimestamp(float(x)).strftime('%d %b %H:%M')
+
+
+def time_ranges(t, n=N_TIME_WINDOWS):
+    '''Every contiguous RANGE of n equal time chunks, as (label, mask).
+
+    A slider step in plotly carries one fixed set of arrays, so a genuine
+    from-to control means precomputing each range. That is n(n+1)/2 steps,
+    each holding its own copy of the curtain - which is why N_TIME_WINDOWS
+    stays small.
+    '''
+    edges = np.linspace(t[0], t[-1], n + 1)
+    out = [('whole period', np.ones(t.size, bool))]
+    for i in range(n):
+        for j in range(i, n):
+            if i == 0 and j == n - 1:
+                continue                        # that is 'whole period'
+            keep = (t >= edges[i]) & (t <= edges[j + 1])
+            if keep.sum() < 2:
+                continue
+            label = (f'{i + 1}' if i == j else f'{i + 1}-{j + 1}') + \
+                    f'   {_stamp(edges[i])} -> {_stamp(edges[j + 1])}'
+            out.append((label, keep))
+    return out
 
 
 def curtain_fig(grid, ts, terrain):
@@ -877,12 +1008,8 @@ def curtain_fig(grid, ts, terrain):
     lon, lat, z, fields = curtain_arrays(grid, have)
     t = tsec(grid.time.values)
 
-    edges = np.linspace(t[0], t[-1], N_TIME_WINDOWS + 1)
-    windows = [('whole period', np.ones(t.size, bool))]
-    for a, b in zip(edges[:-1], edges[1:]):
-        keep = (t >= a) & (t <= b)
-        if keep.sum() >= 2:
-            windows.append((_wlabel(a, b), keep))
+    windows = time_ranges(t)
+    print(f'   3D: {len(windows)} time ranges from {N_TIME_WINDOWS} chunks')
 
     first = have[0]
     fig = go.Figure()
@@ -898,10 +1025,11 @@ def curtain_fig(grid, ts, terrain):
     fig.add_trace(go.Surface(
         x=X, y=Y, z=Z, surfacecolor=F, colorscale=stepped(scale_for(first)),
         cmin=lo, cmax=hi, name=first, showscale=True,
-        colorbar=dict(title=first, thickness=12),
+        colorbar=dict(title=first, thickness=12, len=0.7),
         hovertemplate='%{x:.4f}, %{y:.4f}<br>%{z:.0f} m<br>'
                       '%{surfacecolor:.3f}<extra></extra>'))
 
+    # switching variable resets the view to the whole period
     var_buttons = []
     for v in have:
         vlo, vhi = clim(fields[v])
@@ -920,32 +1048,24 @@ def curtain_fig(grid, ts, terrain):
                           args=[{'x': [Xw], 'y': [Yw], 'z': [Zw],
                                  'surfacecolor': [Fw]}, [cur_i]]))
 
-    sch = [dict(label=s, method='restyle',
-                args=[{'colorscale': [stepped(scale_for(first))
-                                      if s.startswith('per')
-                                      else stepped(scale(s))]}, [cur_i]])
-           for s in COLOUR_SCHEMES]
-
-    tvis = ([dict(label='terrain on', method='restyle',
-                  args=[{'visible': [True]}, [ti]]),
-             dict(label='terrain off', method='restyle',
-                  args=[{'visible': [False]}, [ti]])] if ti is not None else [])
-
     menus = [dict(buttons=var_buttons, direction='down', showactive=True,
-                  x=0, xanchor='left', y=1.05, yanchor='bottom'),
-             dict(buttons=sch, direction='down', showactive=True,
-                  x=0.22, xanchor='left', y=1.05, yanchor='bottom')]
-    if tvis:
-        menus.append(dict(buttons=tvis, direction='down', showactive=True,
-                          x=0.46, xanchor='left', y=1.05, yanchor='bottom'))
+                  x=0, xanchor='left', y=1.0, yanchor='top')]
+    if ti is not None:
+        menus.append(dict(buttons=[
+            dict(label='terrain on', method='restyle',
+                 args=[{'visible': [True]}, [ti]]),
+            dict(label='terrain off', method='restyle',
+                 args=[{'visible': [False]}, [ti]])],
+            direction='down', showactive=True,
+            x=0.24, xanchor='left', y=1.0, yanchor='top'))
 
     fig.update_layout(
         updatemenus=menus,
-        sliders=[dict(active=0, currentvalue=dict(prefix='period: '),
-                      pad=dict(t=18), steps=steps, x=0.02, len=0.96)],
-        annotations=[dict(text='variable', x=-0.005, y=1.06, xref='paper',
-                          yref='paper', showarrow=False, xanchor='right'),
-                     dict(text='colours', x=0.215, y=1.06, xref='paper',
+        sliders=[dict(active=0, currentvalue=dict(prefix='period: ',
+                                                  font=dict(size=12)),
+                      pad=dict(t=30, b=10), steps=steps,
+                      x=0.02, len=0.96, y=-0.02, yanchor='top')],
+        annotations=[dict(text='variable', x=-0.005, y=1.005, xref='paper',
                           yref='paper', showarrow=False, xanchor='right')],
         scene=dict(xaxis_title='longitude', yaxis_title='latitude',
                    zaxis_title='depth [m]', aspectmode='manual',
@@ -953,8 +1073,10 @@ def curtain_fig(grid, ts, terrain):
                    camera=dict(eye=dict(x=1.4, y=-1.4, z=0.8)),
                    **scene_axes()),
         paper_bgcolor='rgba(0,0,0,0)' if SCENE_TRANSPARENT else None,
-        height=HEIGHT_3D, margin=dict(t=80, l=0, r=0, b=10),
-        title='seabed + measured curtain (drag to fly, scroll to zoom)')
+        height=HEIGHT_3D, margin=dict(t=50, l=0, r=0, b=120),
+        title=dict(text='Seabed + measured variables',
+                   yref='container', y=0.985, yanchor='top',
+                   x=0.5, xanchor='center'))
     return fig
 
 
@@ -989,48 +1111,31 @@ def scatter3d_fig(ts, terrain=None):
                         'marker.cmax': clim(num(v))[1],
                         'marker.colorbar.title.text': v}, [ci]])
             for v in opts], direction='down', showactive=True,
-            x=0, xanchor='left', y=1.05, yanchor='bottom')],
+            x=0, xanchor='left', y=1.0, yanchor='top')],
         scene=dict(xaxis_title='longitude', yaxis_title='latitude',
                    zaxis_title='depth [m]', aspectmode='manual',
                    aspectratio=dict(x=1, y=1, z=Z_EXAGGERATION),
                    **scene_axes()),
         paper_bgcolor='rgba(0,0,0,0)' if SCENE_TRANSPARENT else None,
-        height=HEIGHT_3D, margin=dict(t=70, l=0, r=0, b=0), title='3D track')
+        height=HEIGHT_3D, margin=dict(t=110, l=0, r=0, b=10),
+        title=dict(text='3D track', yref='container', y=0.985,
+                   yanchor='top', x=0.5, xanchor='center'))
     return fig
 
 
 #%% ============================================================
-#   TAB 5 - map
+#   TAB 5 - map + average currents
 #   ============================================================
-def coastline_geojson(path):
-    path = Path(path)
-    if not path.exists():
-        print(f'   no {path.name} - skipping the coastline')
-        return None
-    try:
-        import geopandas as gpd
-        return json.loads(gpd.read_file(path).to_crs('EPSG:4326').to_json())
-    except ImportError:
-        pass
-    try:
-        import shapefile
-        sf = shapefile.Reader(str(path))
-        return {'type': 'FeatureCollection',
-                'features': [{'type': 'Feature', 'properties': {},
-                              'geometry': s.__geo_interface__}
-                             for s in sf.shapes()]}
-    except Exception as e:
-        print(f'   coastline not read ({e})')
-        return None
-
-
 def bathy_layer():
-    p = Path(BATHY_PNG)
-    if not p.exists():
-        print(f'   no {p.name} - map without bathymetry')
+    '''Georeferenced image layer for the map, from data/bathymetry_image/.
+    The image is base64-embedded in the page, so its file size is added to
+    every glider's html - keep it well under 2 MB.'''
+    p, bounds = config.bathy_image()
+    if p is None:
         return None
-    s, w, n, e = BATHY_BOUNDS
-    uri = 'data:image/png;base64,' + base64.b64encode(p.read_bytes()).decode()
+    s, w, n, e = bounds
+    uri = (f'data:image/{p.suffix.lstrip(".").lower()};base64,'
+           + base64.b64encode(p.read_bytes()).decode())
     print(f'   bathymetry: {p.name} ({p.stat().st_size/1e6:.1f} MB)')
     return dict(sourcetype='image', source=uri, below='traces',
                 opacity=BATHY_OPACITY,
@@ -1079,7 +1184,8 @@ def surface_intervals(ts, surface_depth=SURFACE_DEPTH,
         seg_u, seg_v = u[a:b], v[a:b]
         if not (np.isfinite(seg_u).any() and np.isfinite(seg_v).any()):
             continue
-        if not (np.isfinite(lon[[a, b]]).all() and np.isfinite(lat[[a, b]]).all()):
+        if not (np.isfinite(lon[[a, b]]).all()
+                and np.isfinite(lat[[a, b]]).all()):
             continue
         r['lon0'].append(lon[a]);  r['lat0'].append(lat[a])
         r['lon1'].append(lon[b]);  r['lat1'].append(lat[b])
@@ -1161,9 +1267,9 @@ def current_arrows(cur, deg_per_ms=CURRENT_ARROW_SCALE,
     return out
 
 
-def map_fig(ts, coast, bathy):
-    '''Basemap + bathymetry image + coastline + grey track through the
-    surfacings, coloured by time + depth-averaged current arrows.'''
+def map_fig(ts, bathy):
+    '''Basemap + bathymetry image + track through the surfacings, coloured by
+    time + depth-averaged current arrows.'''
     if not {'longitude', 'latitude'} <= set(ts.data_vars) | set(ts.coords):
         print('   no position - skipping the map')
         return None
@@ -1198,12 +1304,28 @@ def map_fig(ts, coast, bathy):
             marker=dict(size=3, color='#888', opacity=0.35),
             name='all samples', hoverinfo='skip'))
 
-    # surfacings coloured by time order
+    # ---- surfacings, coloured by time order -----------------------------
+    # A small dated colourbar says what the colours mean; without it the
+    # gradient is decorative rather than readable.
+    n = tlon.size
+    marker = dict(size=SURFACE_MARKER_SIZE, color=np.arange(n),
+                  colorscale=SURFACE_CMAP, showscale=False)
+    if SHOW_SURFACE_TIMEBAR and n > 1:
+        ticks = sorted({0, (n - 1) // 2, n - 1})
+        marker.update(
+            showscale=True,
+            colorbar=dict(title=dict(text='surfacing', side='right',
+                                     font=dict(size=10)),
+                          thickness=7, len=0.30,
+                          x=0.995, xanchor='right',
+                          y=0.03, yanchor='bottom',
+                          tickmode='array', tickvals=ticks,
+                          ticktext=[str(ttime[i])[:10] for i in ticks],
+                          tickfont=dict(size=9),
+                          outlinewidth=0,
+                          bgcolor='rgba(255,255,255,0.65)'))
     fig.add_trace(go.Scattermap(
-        lon=tlon, lat=tlat, mode='markers',
-        marker=dict(size=SURFACE_MARKER_SIZE,
-                    color=np.arange(tlon.size), colorscale=SURFACE_CMAP,
-                    showscale=False),
+        lon=tlon, lat=tlat, mode='markers', marker=marker,
         name='surfacings',
         text=[str(t)[:19] for t in ttime],
         hovertemplate='%{text}<br>%{lat:.4f}, %{lon:.4f}<extra></extra>'))
@@ -1223,12 +1345,7 @@ def map_fig(ts, coast, bathy):
         text=[str(times[-1])[:19]],
         hovertemplate='last position<br>%{text}<extra></extra>'))
 
-    layers = []
-    if bathy:
-        layers.append(bathy)
-    if coast:
-        layers.append(dict(source=coast, type='line', color='black',
-                           line=dict(width=1.5)))
+    layers = [bathy] if bathy else []
 
     fig.update_layout(
         map=dict(style=MAP_STYLE, zoom=MAP_ZOOM, layers=layers,
@@ -1236,8 +1353,7 @@ def map_fig(ts, coast, bathy):
                              lat=float(np.nanmean(lat)))),
         height=740, margin=dict(t=50, l=0, r=0, b=0),
         legend=dict(orientation='h', y=1.02),
-        title='surface events and depth-averaged currents '
-              '(green = start, red = last position)')
+        title='Map + average currents')
     return fig
 
 
@@ -1278,10 +1394,9 @@ def rose_fig(ts):
                              ticktext=['N', 'NE', 'E', 'SE',
                                        'S', 'SW', 'W', 'NW']),
             radialaxis=dict(ticksuffix=' %', angle=90)),
-        title=f'depth-averaged current rose - direction flowed TOWARD, '
-              f'{cur["u"].size} surface intervals '
-              f'(first {CURRENT_SKIP_FIRST} skipped)')
+        title=f'Depth-averaged current rose diagram')
     return fig
+
 
 def track_bbox(ts):
     lon = np.asarray(ts['longitude'].values, float)
@@ -1366,7 +1481,7 @@ def segment_text():
             else f'segment {SEGMENTS}')
 
 
-def build(glider, coast, bathy):
+def build(glider, bathy):
     print(f'\n=== {glider} ===')
     t0, t1 = segment_window()
     grid = load_grid(glider, t0, t1)
@@ -1407,21 +1522,21 @@ def build(glider, coast, bathy):
         else:
             inner = embed(sci)
         add('Science', inner,
-            'drag to zoom | "+ glider depth" overlays the dive profile '
-            '(it is plotted against time)')
+            'drag to zoom | "colour" picks which variable tints the markers')
 
-    gld = scatter_fig(ts, GLIDER_VARS, DEFAULT_GLIDER, 'pick the axes above')
+    gld = glider_fig(ts)
     if gld is not None:
         add('Glider', embed(gld),
-            'drag to zoom | "+ glider depth" overlays the dive profile '
-            '(it is plotted against time)')
+            'all panels share the zoom - drag on any one | orange = measured, '
+            'dark = commanded | grey bands = descending')
 
     cur = curtain_fig(grid, ts, terrain)
     if cur is not None:
         add('3D', embed(cur),
-            'drag to rotate, scroll to zoom | slider picks the time window')
+            'drag to rotate, scroll to zoom | the slider picks a time RANGE '
+            '(single chunk or several in a row)')
 
-    mp = map_fig(ts, coast, bathy)
+    mp = map_fig(ts, bathy)
     rose = rose_fig(ts) if SHOW_CURRENT_ROSE else None
     if mp is not None:
         if rose is not None:
@@ -1433,7 +1548,7 @@ def build(glider, coast, bathy):
                      f'<div class="sub">{embed(rose)}</div></div>')
         else:
             inner = embed(mp)
-        add('Map', inner,
+        add('Map + average currents', inner,
             'scroll to zoom, drag to pan | red arrows = depth-averaged '
             'current per surface-to-surface interval')
 
@@ -1453,16 +1568,9 @@ def build(glider, coast, bathy):
     return out
 
 
-# COAST = coastline_geojson(COASTLINE_SHP)
-# BATHY = bathy_layer()
-# pages = [build(g, COAST, BATHY) for g in GLIDERS]
-# print(f'\nopen: {pages[0]}')
-
 # %%
-
 if __name__ == '__main__':
-    COAST = coastline_geojson(COASTLINE_SHP)
     BATHY = bathy_layer()
-    pages = [build(g, COAST, BATHY) for g in GLIDERS]
+    pages = [build(g, BATHY) for g in GLIDERS]
     print(f'\nopen: {pages[0]}')
 # %%
