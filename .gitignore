@@ -8,7 +8,7 @@ rawnc/
 L0-timeseries/
 L0-profiles/
 L0-gridfiles/
-L0_logs/
+L0-logs/
 plots/
 interactive/
 logs/
