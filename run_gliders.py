@@ -23,6 +23,8 @@ import datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+
+#check for git to work 
 LOGS = Path(__file__).resolve().parent / 'logs'
 LOGS.mkdir(exist_ok=True)
 _print_lock = threading.Lock()
