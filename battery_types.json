@@ -1,0 +1,95 @@
+{
+  "battery_types": [
+    {
+      "name": "alkaline standard pack",
+      "total_non_derated_Ah": 168.0,
+      "total_non_derated_Wh": 2520,
+      "f_coulomb_battery_capacity": 120.0,
+      "undervolts": 10.0,
+      "Vcutoff": 10.0,
+      "Vmax": 16.0,
+      "Vmin": 9.0,
+      "recommended_recovery_fraction_used": 0.84,
+      "critical_recovery_fraction_used": 0.88,
+      "shutdown_fraction_used": 1.00
+    },
+    {
+      "name": "3s primary pack",
+      "total_non_derated_Ah": 780.0,
+      "total_non_derated_Wh": 8424,
+      "f_coulomb_battery_capacity": 720.0,
+      "undervolts": 9.8,
+      "Vcutoff": 10.0,
+      "Vmax": 16.0,
+      "Vmin": 9.0,
+      "recommended_recovery_fraction_used": 0.84,
+      "critical_recovery_fraction_used": 0.88,
+      "shutdown_fraction_used": 1.00
+    },
+    {
+      "name": "3s primary extended",
+      "total_non_derated_Ah": 1140.0,
+      "total_non_derated_Wh": 12312,
+      "f_coulomb_battery_capacity": 1050.0,
+      "undervolts": 9.8,
+      "Vcutoff": 10.0,
+      "Vmax": 16.0,
+      "Vmin": 9.0,
+      "recommended_recovery_fraction_used": 0.84,
+      "critical_recovery_fraction_used": 0.88,
+      "shutdown_fraction_used": 1.00
+    },
+    {
+      "name": "4s primary standard",
+      "total_non_derated_Ah": 600.0,
+      "total_non_derated_Wh": 8600,
+      "f_coulomb_battery_capacity": 550.0,
+      "undervolts": 12.0,
+      "Vcutoff": 10.0,
+      "Vmax": 16.0,
+      "Vmin": 9.0,
+      "recommended_recovery_fraction_used": 0.84,
+      "critical_recovery_fraction_used": 0.88,
+      "shutdown_fraction_used": 1.00
+    },
+    {
+      "name": "4s primary extended",
+      "total_non_derated_Ah": 870.0,
+      "total_non_derated_Wh": 12500,
+      "f_coulomb_battery_capacity": 800.0,
+      "undervolts": 12.0,
+      "Vcutoff": 10.0,
+      "Vmax": 16.0,
+      "Vmin": 9.0,
+      "recommended_recovery_fraction_used": 0.84,
+      "critical_recovery_fraction_used": 0.88,
+      "shutdown_fraction_used": 1.00
+    },
+    {
+      "name": "lithium rechargeable standard",
+      "total_non_derated_Ah": 234.6,
+      "total_non_derated_Wh": 3300,
+      "f_coulomb_battery_capacity": 215.0,
+      "undervolts": 12.5,
+      "Vcutoff": 10.0,
+      "Vmax": 17.0,
+      "Vmin": 9.0,
+      "recommended_recovery_fraction_used": 0.84,
+      "critical_recovery_fraction_used": 0.88,
+      "shutdown_fraction_used": 1.00
+    },
+    {
+      "name": "lithium rechargeable extended",
+      "total_non_derated_Ah": 326.4,
+      "total_non_derated_Wh": 4700,
+      "f_coulomb_battery_capacity": 270.0,
+      "undervolts": 12.5,
+      "Vcutoff": 10.0,
+      "Vmax": 17.0,
+      "Vmin": 9.0,
+      "recommended_recovery_fraction_used": 0.84,
+      "critical_recovery_fraction_used": 0.88,
+      "shutdown_fraction_used": 1.00
+    }
+  ]
+}

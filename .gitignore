@@ -39,6 +39,8 @@ segments.csv
 *.shx
 *.dbf
 *.prj
+*.parquet
+*csv
 
 # ---- python ----
 __pycache__/

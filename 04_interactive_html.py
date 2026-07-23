@@ -262,6 +262,68 @@ START_END_SIZE = 18
 SHOW_CURRENT_ROSE = True    # a "current rose" sub-tab next to the map
 ROSE_SECTOR_DEG = 15        # sector width; 15 -> 24 petals
 
+#------ logs form glider tab ------------------------------------------------
+
+SHOW_LOGS = True            # False = no Logs tab at all
+LOG_PARQUET_DIR = config.L0_LOGS
+                            # L0-logs/<glider>/ - where 03_parse_logs.py
+                            # wrote its parquet
+ 
+LOG_TABLE_MAX_ROWS = 400    # newest N dumps in the log book. Every row is
+                            # plain HTML, so this is cheap - raise freely.
+LOG_ONLY_LAST_DUMP = True   # the glider re-prints the same status every ~60 s
+                            # while it sits at the surface. True keeps only
+                            # the last dump of each surfacing, which is the
+                            # one that actually summarises it. False shows all.
+ 
+# severity colours - deliberately loud, this is the "something changed" signal
+LOG_COL_ERROR   = '#ff4d4d'
+LOG_COL_WARNING = '#ffb020'
+LOG_COL_ODDITY  = '#ffe680'
+LOG_COL_OK      = 'transparent'
+LOG_COL_ABORT   = '#c026d3'   # magenta: an abort happened on this surfacing
+
+LOG_SHOW_STICKY_ABORT = False
+                            # "ABORT HISTORY: last abort ..." is STICKY - the
+                            # glider reprints the same last-abort forever, so
+                            # it says nothing about the row it appears on.
+                            # False shows it only on the surfacing where the
+                            # abort actually happened (detected from the abort
+                            # timestamp / counter CHANGING). True = old
+                            # behaviour, the note on every row.
+ 
+DEVICE_PANEL_MIN_HEIGHT = 210   # px floor per panel
+DEVICE_ROW_PX = 15              # px per device row; the panel grows with the
+                                # number of devices so the labels stay legible
+DEVICE_HIDE_QUIET = False   # True = only show devices that ever logged
+                            # something. False keeps every device so a
+                            # normally-silent one lighting up is obvious.
+ 
+LOG_SENSOR_HEIGHT = 640
+LOG_KEY_SENSORS = ['m_battery', 'm_lithium_battery_relative_charge',
+                   'm_coulomb_amphr_total', 'm_vacuum',
+                   'm_iridium_signal_strength', 'm_leakdetect_voltage',
+                   'm_avg_dive_rate', 'm_avg_climb_rate',
+                   'm_tot_num_inflections']
+                            # the ones you actually watch every surfacing;
+                            # they get their own stacked panel view
+LOG_KEY_ROW_HEIGHT = 135
+LOG_KEY_BG = '#ececec'      # light grey plot background for the housekeeping
+LOG_KEY_GRID = '#ffffff'    # panels, with white gridlines on top of it
+LOG_KEY_GRID_WIDTH = 1
+
+#------ battery tab ---------------------------------------------------------
+
+SHOW_BATTERY = True
+BATTERY_DIR = config.L0_LOGS      # where 03b_battery.py wrote its JSON
+
+BATT_ROW_HEIGHT = 330             # px per panel (3 panels)
+BATT_URGENT_DAYS = 3              # red banner below this many days to recovery
+BATT_WARN_DAYS = 7                # amber below this
+BATT_MEASURED_COLOUR = "#21c2cb"
+BATT_HEADLINE_COLOUR = "#d65e27"
+BATT_FAN_COLOUR = 'rgba(120,120,120,0.75)'
+
 # ---- page ---------------------------------------------------------------
 OUT_DIR = config.HTML       # <glider>.html is written here
 
@@ -271,6 +333,7 @@ OUT_DIR = config.HTML       # <glider>.html is written here
 #   ============================================================
 from pathlib import Path
 import base64
+import json
 import bisect
 import datetime as dt
 
@@ -1407,6 +1470,663 @@ def track_bbox(ts):
     return (lon[ok].min(), lon[ok].max(), lat[ok].min(), lat[ok].max())
 
 
+def load_logs(glider):
+    '''-> (surfacings, sensors, devices) DataFrames, or (None, None, None).
+    Parquet first, CSV as a fallback so the tab still works if pyarrow is
+    missing on the box that runs this.'''
+    import pandas as pd
+    d = Path(LOG_PARQUET_DIR)
+    if not d.exists():
+        print(f'   no log directory {d} - skipping the Logs tab')
+        return None, None, None
+ 
+    def read(kind):
+        pq = d / f'{glider}_{kind}.parquet'
+        csv = d / f'{glider}_{kind}.csv'
+        try:
+            if pq.exists():
+                return pd.read_parquet(pq)
+            if csv.exists():
+                return pd.read_csv(csv, parse_dates=['time'])
+        except Exception as e:
+            print(f'   could not read {kind}: {e}')
+        return None
+ 
+    surf = read('surfacings')
+    if surf is None or not len(surf):
+        print('   no parsed surfacings - run 03_parse_logs.py first')
+        return None, None, None
+    surf['time'] = pd.to_datetime(surf['time'])
+    sens, devs = read('sensors'), read('devices')
+    for df in (sens, devs):
+        if df is not None and len(df):
+            df['time'] = pd.to_datetime(df['time'])
+    print(f'   logs: {len(surf)} dumps, '
+          f'{surf["surfacing_id"].nunique()} surfacings')
+    return surf, sens, devs
+ 
+ 
+def _esc(x):
+    '''minimal HTML escape - "Because:" strings contain < and >'''
+    if x is None:
+        return ''
+    s = str(x)
+    if s in ('nan', 'NaT', 'None', '<NA>'):
+        return ''
+    return (s.replace('&', '&amp;').replace('<', '&lt;')
+             .replace('>', '&gt;').replace('"', '&quot;'))
+ 
+ 
+def _fmt(v, spec='', dash='-'):
+    import pandas as pd
+    if v is None or (isinstance(v, float) and not np.isfinite(v)) \
+            or pd.isna(v):
+        return dash
+    try:
+        return format(v, spec) if spec else str(v)
+    except (TypeError, ValueError):
+        return str(v)
+ 
+ 
+def mark_abort_events(df):
+    '''Flag the surfacing where an abort actually HAPPENED.
+
+    The "ABORT HISTORY:" block is sticky - once the glider aborts, every
+    later surface dialog reprints the same cause and timestamp until the
+    next reset. So the presence of a cause means nothing; the CHANGE does.
+    An abort is real on the dump where the abort timestamp differs from the
+    previous dump, or where the total-since-reset counter went up.
+
+    The flag is then spread across the whole surfacing, so it survives
+    LOG_ONLY_LAST_DUMP filtering out the dump it was first seen on. Row 0
+    is never flagged - its history predates the record, so we cannot know
+    when that abort happened.
+    '''
+    import pandas as pd
+    df = df.sort_values('time').reset_index(drop=True)
+    ev = pd.Series(False, index=df.index)
+
+    if 'abort_last_abort_time' in df:
+        s = df['abort_last_abort_time'].astype('string')
+        ev |= (s.notna() & (s != s.shift())).fillna(False)
+    if 'abort_total_since_reset' in df:
+        tot = pd.to_numeric(df['abort_total_since_reset'], errors='coerce')
+        ev |= (tot.diff() > 0).fillna(False)
+    if len(ev):
+        ev.iloc[0] = False
+    if 'aborted_now' in df:
+        ev |= df['aborted_now'].fillna(False).astype(bool)
+
+    df['abort_event'] = ev
+    if 'surfacing_id' in df:
+        df['abort_event'] = df.groupby('surfacing_id')['abort_event'] \
+                              .transform('any')
+    return df
+
+
+def logbook_html(surf):
+    '''The log book: one row per surfacing dump.
+
+    A dump is coloured by what it introduced SINCE THE PREVIOUS ONE, not by
+    the cumulative totals - after a week at sea the totals are always large
+    and stop meaning anything, whereas "+5 oddities in the last dive" is the
+    thing worth looking at. Aborts get the loudest treatment and their own
+    filter, because they are the one thing you must not scroll past.
+    '''
+    df = mark_abort_events(surf)
+    n_abort = int(df.loc[df.get('abort_event', False)
+                         .fillna(False), 'surfacing_id'].nunique()) \
+        if 'surfacing_id' in df else int(df['abort_event'].sum())
+
+    if LOG_ONLY_LAST_DUMP and 'last_dump' in df:
+        df = df[df['last_dump'].fillna(True).astype(bool)]
+    df = df.sort_values('time', ascending=False).head(LOG_TABLE_MAX_ROWS)
+
+    head = ['time (UTC)', 'segment', 'why it surfaced', 'new problems',
+            'GPS', 'waypoint', 'files', 'next dive', 'notes']
+    rows = []
+    for _, r in df.iterrows():
+        sev = r.get('severity', 'ok')
+        aborted = bool(r.get('abort_event', False))
+        cls = 'abort' if aborted else sev
+
+        badges = ''
+        if aborted:
+            badges += '<span class="badge abrt">ABORT</span>'
+        for kind, lbl in (('new_err', 'err'), ('new_warn', 'warn'),
+                          ('new_odd', 'odd')):
+            n = r.get(kind, 0)
+            n = 0 if n is None or (isinstance(n, float)
+                                   and not np.isfinite(n)) else int(n)
+            if n > 0:
+                badges += f'<span class="badge {lbl}">+{n} {lbl}</span>'
+        if not badges:
+            badges = '<span class="quiet">clean</span>'
+
+        gps = (f'{_fmt(r.get("gps_lat"), ".4f")}, '
+               f'{_fmt(r.get("gps_lon"), ".4f")}')
+        if np.isfinite(r.get('gps_age_s', np.nan)):
+            gps += f'<span class="quiet"> ({r["gps_age_s"]:.0f}s old)</span>'
+
+        wpt = '-'
+        if np.isfinite(r.get('wpt_range_m', np.nan)):
+            wpt = (f'{r["wpt_range_m"]:.0f} m @ '
+                   f'{_fmt(r.get("wpt_bearing_deg"), ".0f")}&deg;')
+
+        files = '-'
+        n_f = r.get('n_files_sent', 0) or 0
+        if n_f:
+            kb = (r.get('bytes_sent', 0) or 0) / 1000
+            files = f'{int(n_f)} <span class="quiet">({kb:.0f} kB)</span>'
+
+        dive = ('-' if not np.isfinite(r.get('dive_in_s', np.nan))
+                else f'{r["dive_in_s"]:.0f} s')
+
+        notes = []
+        cause = _esc(r.get('abort_last_abort_cause'))
+        if aborted and cause:
+            notes.append(f'<b class="abrt-note" title="'
+                         f'{_esc(r.get("abort_last_abort_details"))}">'
+                         f'ABORTED: {cause}</b>')
+        elif cause and LOG_SHOW_STICKY_ABORT:
+            notes.append(f'<span class="quiet" title="'
+                         f'{_esc(r.get("abort_last_abort_details"))}">'
+                         f'last abort: {cause}</span>')
+        if r.get('resumed'):
+            notes.append('resumed')
+        if r.get('consci'):
+            notes.append('consci')
+        n_ood = r.get('n_ood', 0) or 0
+        if n_ood:
+            notes.append(f'<span title="{_esc(r.get("ood"))}">'
+                         f'{int(n_ood)} OOD</span>')
+
+        rows.append(
+            f'<tr class="{cls}">'
+            f'<td class="mono">{_esc(r["time"])[:19]}</td>'
+            f'<td class="mono">{_esc(r.get("segment"))}</td>'
+            f'<td>{_esc(r.get("because"))}</td>'
+            f'<td>{badges}</td>'
+            f'<td class="mono">{gps}</td>'
+            f'<td class="mono">{wpt}</td>'
+            f'<td class="mono">{files}</td>'
+            f'<td class="mono">{dive}</td>'
+            f'<td>{" &middot; ".join(notes)}</td>'
+            f'</tr>')
+
+    abort_box = ''
+    if n_abort:
+        abort_box = ('<label class="abrt-toggle">'
+                     '<input type="checkbox" id="logaborts" '
+                     'onchange="filterLog()"> only aborts '
+                     f'<b>({n_abort})</b></label>')
+    else:
+        abort_box = '<span class="quiet">no aborts in this record</span>'
+
+    thead = ''.join(f'<th>{h}</th>' for h in head)
+    return (
+        '<div class="logtools">'
+        '<input id="logsearch" type="text" placeholder="filter (segment, '
+        'reason, note ...)" oninput="filterLog()">'
+        '<label><input type="checkbox" id="logproblems" '
+        'onchange="filterLog()"> only rows with new problems</label>'
+        f'{abort_box}'
+        '<span class="quiet" id="logcount"></span></div>'
+        f'<div class="logwrap"><table class="logtable" id="logtable">'
+        f'<thead><tr>{thead}</tr></thead><tbody>{"".join(rows)}</tbody>'
+        '</table></div>')
+ 
+ 
+def _severity_ramp(hi):
+    '''white at zero (so only real events show), then up to `hi`'''
+    return [[0.0, 'rgba(255,255,255,1)'], [0.0001, '#fffbe6'],
+            [0.35, '#ffe680'], [1.0, hi]]
+
+
+def device_health_fig(devices):
+    '''NEW problems per device per surfacing - all three severities stacked,
+    never behind a dropdown.
+
+    Cumulative counters only ever go up, so plotting them shows a staircase
+    that says nothing; the delta says which dive broke something. The three
+    panels share the time axis and each gets its own colour family, so the
+    severity is readable from colour alone. An all-white panel means nothing
+    of that kind happened - which is the point of showing it anyway.
+    '''
+    if devices is None or not len(devices):
+        return None
+
+    kinds = [('new_odd', 'oddities', LOG_COL_ODDITY),
+             ('new_warn', 'warnings', LOG_COL_WARNING),
+             ('new_err', 'errors', LOG_COL_ERROR)]
+
+    mats = {}
+    for col, _, _ in kinds:
+        if col not in devices:
+            return None
+        p = devices.pivot_table(index='device', columns='time', values=col,
+                                aggfunc='max')
+        if DEVICE_HIDE_QUIET:
+            p = p[p.fillna(0).sum(axis=1) > 0]
+        if p.empty:
+            return None
+        mats[col] = p
+
+    n_dev = len(mats[kinds[0][0]].index)
+    panel = max(DEVICE_PANEL_MIN_HEIGHT, DEVICE_ROW_PX * n_dev)
+
+    fig = make_subplots(rows=len(kinds), cols=1, shared_xaxes=True,
+                        vertical_spacing=0.05,
+                        subplot_titles=[f'new {lbl}' for _, lbl, _ in kinds])
+
+    for k, (col, lbl, hi) in enumerate(kinds):
+        p = mats[col]
+        Z = p.values.astype(float)
+        fig.add_trace(go.Heatmap(
+            z=Z, x=list(p.columns), y=list(p.index),
+            colorscale=_severity_ramp(hi),
+            zmin=0, zmax=max(np.nanmax(Z), 1), xgap=1, ygap=1,
+            colorbar=dict(title=dict(text=lbl, side='right',
+                                     font=dict(size=10)),
+                          thickness=10, len=1 / len(kinds) - 0.06,
+                          y=1 - (k + 0.5) / len(kinds),
+                          tickfont=dict(size=9)),
+            hovertemplate='%{y}<br>%{x|%d %b %H:%M}<br>'
+                          '+%{z:.0f} ' + lbl + '<extra></extra>'),
+            row=k + 1, col=1)
+        fig.update_yaxes(autorange='reversed', tickfont=dict(size=10),
+                         row=k + 1, col=1)
+
+    for ann in fig.layout.annotations:      # subplot titles, left-aligned
+        ann.update(x=0, xanchor='left', font=dict(size=12.5))
+
+    fig.update_layout(
+        height=panel * len(kinds) + 130, template='plotly_white',
+        margin=dict(t=95, l=145, r=20, b=55), hovermode='closest',
+        title=dict(text='NEW problems per device, per surfacing '
+                        '(white = nothing happened)',
+                   x=0.5, xanchor='center'))
+    return fig
+ 
+ 
+def log_sensors_fig(sensors):
+    '''Every sensor the surface dialog reports, one at a time from a
+    dropdown. x is the time the value was MEASURED where that is known
+    (report time minus the "secs ago"), which is often minutes earlier.'''
+    if sensors is None or not len(sensors):
+        return None
+    df = sensors
+    if 'stale' in df:
+        df = df[~df['stale'].fillna(False).astype(bool)]
+    df = df[np.isfinite(df['value'])]
+    if not len(df):
+        return None
+ 
+    names = sorted(df['sensor'].unique())
+    tcol = 'measured_at' if 'measured_at' in df else 'time'
+ 
+    def series(name):
+        s = df[df['sensor'] == name].sort_values(tcol)
+        return ([str(t)[:19] for t in s[tcol]],
+                [round(float(v), 6) for v in s['value']],
+                (s['units'].iloc[0] if len(s) else ''))
+ 
+    first = ('m_battery' if 'm_battery' in names else names[0])
+    x, y, u = series(first)
+ 
+    fig = go.Figure(go.Scattergl(
+        x=x, y=y, mode='lines+markers',
+        line=dict(width=1.2, color=GLIDER_MEASURED_COLOUR),
+        marker=dict(size=4, color=GLIDER_MEASURED_COLOUR),
+        hovertemplate='%{x}<br>%{y}<extra></extra>', showlegend=False))
+ 
+    buttons = []
+    for n in names:
+        xs, ys, un = series(n)
+        buttons.append(dict(
+            label=n, method='update',
+            args=[{'x': [xs], 'y': [ys]},
+                  {'yaxis.title.text': f'{n} [{un}]',
+                   'title.text': f'{n}  [{un}]  -  {len(xs)} readings'}]))
+ 
+    fig.update_layout(
+        updatemenus=[dict(buttons=buttons, direction='down', showactive=True,
+                          x=0, xanchor='left', y=1.10, yanchor='top',
+                          active=names.index(first))],
+        annotations=[dict(text='sensor', x=-0.005, y=1.12, xref='paper',
+                          yref='paper', showarrow=False, xanchor='right')],
+        height=LOG_SENSOR_HEIGHT, template='plotly_white',
+        plot_bgcolor=SCATTER_BG, xaxis_title='time',
+        yaxis_title=f'{first} [{u}]',
+        margin=dict(t=95, l=70, r=20, b=50),
+        title=dict(text=f'{first}  [{u}]  -  {len(x)} readings',
+                   x=0.5, xanchor='center'))
+    return fig
+ 
+ 
+def log_key_fig(sensors):
+    '''The handful of sensors you check every surfacing, stacked and sharing
+    the zoom - battery, charge, vacuum, iridium signal and so on.'''
+    if sensors is None or not len(sensors):
+        return None
+    df = sensors
+    if 'stale' in df:
+        df = df[~df['stale'].fillna(False).astype(bool)]
+    df = df[np.isfinite(df['value'])]
+    have = [s for s in LOG_KEY_SENSORS if (df['sensor'] == s).any()]
+    if not have:
+        return None
+    tcol = 'measured_at' if 'measured_at' in df else 'time'
+ 
+    titles = []
+    for s in have:
+        u = df[df['sensor'] == s]['units'].iloc[0]
+        titles.append(f'{s} [{u}]')
+ 
+    fig = make_subplots(rows=len(have), cols=1, shared_xaxes=True,
+                        vertical_spacing=min(0.02, 0.8 / max(len(have) - 1, 1)),
+                        subplot_titles=titles)
+    for k, s in enumerate(have):
+        d = df[df['sensor'] == s].sort_values(tcol)
+        fig.add_trace(go.Scattergl(
+            x=[str(t)[:19] for t in d[tcol]],
+            y=[round(float(v), 6) for v in d['value']],
+            mode='lines+markers',
+            line=dict(width=1.2, color=GLIDER_MEASURED_COLOUR),
+            marker=dict(size=3.5, color=GLIDER_MEASURED_COLOUR),
+            showlegend=False, name=s,
+            hovertemplate='%{x}<br>%{y}' f'<extra>{s}</extra>'),
+            row=k + 1, col=1)
+ 
+    for ann in fig.layout.annotations:
+        ann.update(x=0, xanchor='left', font=dict(size=12.5))
+
+    # white grid on grey: the axis LINE and the zeroline have to go white too,
+    # otherwise plotly_white leaves dark grey strokes across the panels
+    grid = dict(showgrid=True, gridcolor=LOG_KEY_GRID,
+                gridwidth=LOG_KEY_GRID_WIDTH,
+                zeroline=True, zerolinecolor=LOG_KEY_GRID,
+                zerolinewidth=LOG_KEY_GRID_WIDTH,
+                linecolor=LOG_KEY_GRID, showline=False)
+    fig.update_xaxes(**grid)
+    fig.update_yaxes(**grid)
+    fig.update_xaxes(title_text='time', row=len(have), col=1)
+
+    fig.update_layout(
+        height=LOG_KEY_ROW_HEIGHT * len(have) + 120, template='plotly_white',
+        plot_bgcolor=LOG_KEY_BG,
+        margin=dict(t=70, l=70, r=20, b=45),
+        hovermode='x unified', dragmode='zoom',
+        title=dict(text='housekeeping sensors from the surface dialog',
+                   x=0.5, xanchor='center'))
+    return fig
+
+def load_battery(glider):
+    '''-> (dict, series, dives) from 03b_battery.py, or (None, None, None)'''
+    import pandas as pd
+    d = Path(BATTERY_DIR)
+    j = d / f'{glider}_battery.json'
+    if not j.exists():
+        print('   no battery json - run 03b_battery.py first')
+        return None, None, None
+    try:
+        b = json.loads(j.read_text())
+        s = pd.read_parquet(d / f'{glider}_battery_series.parquet')
+        s.index = pd.to_datetime(s.index)
+        dv = pd.read_parquet(d / f'{glider}_battery_dives.parquet')
+        if len(dv):
+            dv['end'] = pd.to_datetime(dv['end'])
+    except Exception as e:
+        print(f'   could not read the battery files: {e}')
+        return None, None, None
+    print(f'   battery: {b["now"]["pct_left"]:.1f} % left, '
+          f'headline "{b["headline"]}"')
+    return b, s, dv
+ 
+ 
+def _urgency(days):
+    if days is None:
+        return 'ok'
+    return ('urgent' if days < BATT_URGENT_DAYS
+            else 'warn' if days < BATT_WARN_DAYS else 'ok')
+ 
+ 
+def battery_summary_html(b):
+    '''The numbers you actually want at a glance, with the recover-by date
+    sized and coloured by how close it is. Everything else on this tab is
+    supporting evidence for this one line.'''
+    now, cap = b['now'], b['battery']['f_coulomb_battery_capacity']
+    head = b['headline']
+    rec = b['projections'][head]['recovery']
+    crit = b['projections'][head]['critical']
+    cls = _urgency(rec.get('days'))
+ 
+    def card(label, value, sub='', extra=''):
+        return (f'<div class="bcard {extra}"><div class="blab">{label}</div>'
+                f'<div class="bval">{value}</div>'
+                f'<div class="bsub">{sub}</div></div>')
+ 
+    recd = ('unknown' if not rec.get('date')
+            else f'{rec["date"][8:10]} {_MON[int(rec["date"][5:7])]} '
+                 f'{rec["date"][11:16]}')
+    critd = ('' if not crit.get('date')
+             else f'critical {crit["date"][8:10]} '
+                  f'{_MON[int(crit["date"][5:7])]} {crit["date"][11:16]}')
+ 
+    rate = b['rates'][head]['ah_per_day']
+    m = b.get('measured') or {}
+    dive_txt = '-'
+    if m.get('recent'):
+        r = m['recent']
+        dive_txt = (f'{r["dive_hours"]:.2f} h &middot; '
+                    f'{r["ah_per_dive"]:.2f} Ah')
+ 
+    cards = (
+        card('battery left', f'{now["pct_left"]:.1f} %',
+             f'{now["ah_used"]:.1f} of {cap:.0f} Ah used')
+        + card('start recovery by', recd,
+               f'{rec["days"]:.1f} days from now &middot; {critd}'
+               if rec.get('days') is not None else critd,
+               extra=f'wide {cls}')
+        + card('consumption', f'{rate:.2f} Ah/day',
+               f'from: {head}')
+        + card('typical dive', dive_txt,
+               f'{m.get("recent", {}).get("n_dives", 0)} recent of '
+               f'{b.get("n_dives", 0)} dives')
+        + card('pack', b['battery']['name'].replace('lithium ', 'Li '),
+               f'{cap:.0f} Ah &middot; {b["battery"]["detection"]}')
+        + card('flying', b['config']['config_name'],
+               f'{b["config"]["description"]} ({b["config"]["detection"]})')
+    )
+ 
+    warn = ''
+    if cls == 'urgent':
+        warn = ('<div class="bbanner urgent">Recovery window is inside '
+                f'{BATT_URGENT_DAYS} days.</div>')
+    elif cls == 'warn':
+        warn = ('<div class="bbanner warn">Recovery window is inside '
+                f'{BATT_WARN_DAYS} days.</div>')
+ 
+    v = b.get('voltage') or {}
+    note = ('The recover-by date comes from the coulomb counter. The voltage '
+            'panel is a cross-check only: lithium packs hold voltage almost '
+            'flat and then fall away quickly, so a straight line through '
+            'volts reads optimistic until it suddenly does not.')
+    if v.get('undervolts', {}).get('days') is not None:
+        note += (f' That fit currently says {v["undervolts"]["days"]:.0f} days '
+                 f'to {b["battery"]["undervolts"]} V.')
+ 
+    return (f'{warn}<div class="bcards">{cards}</div>'
+            f'<div class="bnote">{note}</div>')
+ 
+ 
+_MON = {1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun',
+        7: 'Jul', 8: 'Aug', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'}
+ 
+ 
+def battery_fig(b, series, dives):
+    '''Three panels: cumulative Ah with the projection and the recovery
+    window, the consumption rate, and the pack voltage.
+ 
+    The panels do NOT share an x axis on purpose - only the top one runs
+    into the future, and stretching the other two to match would squeeze
+    the measured record into a corner.'''
+    import pandas as pd
+    if series is None or not len(series):
+        return None
+ 
+    cap = b['battery']['f_coulomb_battery_capacity']
+    now_t = pd.Timestamp(b['now']['time'])
+    now_ah = b['now']['ah_used']
+    head = b['headline']
+    amp = 'm_coulomb_amphr_total'
+    volt = 'm_battery'
+ 
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=False, vertical_spacing=0.085,
+        subplot_titles=['amp-hours used, measured then projected',
+                        'consumption rate',
+                        'pack voltage (cross-check only)'])
+ 
+    # ---------- row 1: Ah + projection ----------
+    fig.add_trace(go.Scatter(
+        x=series.index, y=series[amp].round(2), mode='lines',
+        line=dict(width=2, color=BATT_MEASURED_COLOUR), name='measured',
+        hovertemplate='%{x|%d %b %H:%M}<br>%{y:.1f} Ah<extra></extra>'),
+        row=1, col=1)
+ 
+    horizon = max([(b['projections'][k]['shutdown'].get('days') or 0)
+                   for k in b['rates']] + [1]) * 1.15
+    tp = pd.date_range(now_t, now_t + pd.Timedelta(days=horizon), periods=40)
+    dd = (tp - now_t) / pd.Timedelta('1D')
+    for name, r in b['rates'].items():
+        y = now_ah + r['ah_per_day'] * dd
+        y = np.where(y <= cap * 1.02, y, np.nan)
+        is_head = name == head
+        fig.add_trace(go.Scatter(
+            x=tp, y=np.round(y, 1), mode='lines',
+            line=dict(width=3 if is_head else 1.3, dash='dash',
+                      color=BATT_HEADLINE_COLOUR if is_head
+                      else BATT_FAN_COLOUR),
+            name=f'{name} ({r["ah_per_day"]:.1f} Ah/d)',
+            legendgroup='proj',
+            hovertemplate='%{x|%d %b %H:%M}<br>%{y:.0f} Ah<br>'
+                          f'{r["note"]}<extra>{name}</extra>'), row=1, col=1)
+ 
+    for key, col in (('recovery', '#e69500'), ('critical', '#c62828'),
+                     ('shutdown', '#666666')):
+        th = b['thresholds'][key]
+        fig.add_hline(y=th['ah'], line=dict(color=col, width=1.4,
+                                            dash='solid' if key != 'shutdown'
+                                            else 'dot'),
+                      annotation_text=f'{key} - {th["pct_left"]:.0f}% left',
+                      annotation_position='top left',
+                      annotation_font=dict(size=10, color=col),
+                      row=1, col=1)
+ 
+    # add_shape/add_annotation rather than add_vline: add_vline with an
+    # annotation asks plotly for the shape's midpoint, which it computes as
+    # sum(x)/len(x). That starts the sum at integer 0, and 0 + Timestamp is
+    # an error in recent pandas - so the convenience wrapper breaks on any
+    # datetime axis. Drawing the line and the label separately never goes
+    # near that code.
+    def _vline(x, colour, width, dash=None, text=None):
+        fig.add_shape(type='line', x0=x, x1=x, y0=0, y1=1, yref='y domain',
+                      line=dict(color=colour, width=width, dash=dash),
+                      row=1, col=1)
+        if text:
+            fig.add_annotation(x=x, y=1.0, yref='y domain', text=text,
+                               showarrow=False, yanchor='bottom',
+                               xanchor='center',
+                               font=dict(size=11, color=colour),
+                               row=1, col=1)
+
+    rec = b['projections'][head]['recovery']
+    crit = b['projections'][head]['critical']
+    if rec.get('date'):
+        rt = pd.Timestamp(rec['date'])
+        if crit.get('date'):
+            fig.add_shape(type='rect', x0=rt, x1=pd.Timestamp(crit['date']),
+                          y0=0, y1=1, yref='y domain',
+                          fillcolor='#c62828', opacity=0.12, line_width=0,
+                          layer='below', row=1, col=1)
+        _vline(rt, '#c62828', 2.5, text=f'recover by {rt:%d %b %H:%M}')
+    _vline(now_t, '#444', 1, dash='dot')
+    fig.update_yaxes(title_text='Ah used', range=[0, cap * 1.05],
+                     row=1, col=1)
+ 
+    # ---------- row 2: rate ----------
+    rr = b.get('roll_rate')
+    if rr:
+        fig.add_trace(go.Scatter(
+            x=pd.to_datetime(rr['time']), y=rr['ah_per_day'], mode='lines',
+            line=dict(width=1.4, color=BATT_MEASURED_COLOUR),
+            name='observed (24 h window)', connectgaps=False,
+            hovertemplate='%{x|%d %b %H:%M}<br>%{y:.2f} Ah/day'
+                          '<extra></extra>'), row=2, col=1)
+    if dives is not None and len(dives):
+        fig.add_trace(go.Scatter(
+            x=dives.end, y=dives.ah_per_day.round(3), mode='markers',
+            marker=dict(size=5, color='#999999'),
+            name=f'per dive (n={len(dives)}, surface hops excluded)',
+            customdata=np.stack([dives.dive_hours, dives.ah_per_dive,
+                                 dives.get('max_depth',
+                                           pd.Series(np.nan, dives.index))],
+                                axis=-1),
+            hovertemplate='%{x|%d %b %H:%M}<br>%{y:.2f} Ah/day<br>'
+                          '%{customdata[0]:.2f} h, %{customdata[1]:.2f} Ah<br>'
+                          'max depth %{customdata[2]:.0f} m<extra></extra>'),
+            row=2, col=1)
+        n_recent = (b.get('measured', {}) or {}).get('recent', {}) \
+            .get('n_dives', 0)
+        if n_recent:
+            tail = dives.tail(n_recent)
+            fig.add_trace(go.Scatter(
+                x=tail.end, y=tail.ah_per_day.round(3), mode='markers',
+                marker=dict(size=10, color='rgba(0,0,0,0)',
+                            line=dict(width=2, color=BATT_HEADLINE_COLOUR)),
+                name=f'last {n_recent} (drives the projection)',
+                hoverinfo='skip'), row=2, col=1)
+    for k, f in (b.get('fits') or {}).items():
+        if f:
+            fig.add_hline(y=f['ah_per_day'],
+                          line=dict(color='rgba(31,119,180,0.55)', width=1,
+                                    dash='dash'),
+                          annotation_text=f'{k}: {f["ah_per_day"]:.2f}',
+                          annotation_position='right',
+                          annotation_font=dict(size=9),
+                          row=2, col=1)
+    fig.update_yaxes(title_text='Ah / day', row=2, col=1)
+ 
+    # ---------- row 3: voltage ----------
+    if volt in series:
+        fig.add_trace(go.Scatter(
+            x=series.index, y=series[volt].round(3), mode='lines',
+            line=dict(width=1.6, color=BATT_MEASURED_COLOUR),
+            name='pack voltage',
+            hovertemplate='%{x|%d %b %H:%M}<br>%{y:.2f} V<extra></extra>'),
+            row=3, col=1)
+    for key, col in (('undervolts', '#e69500'), ('Vcutoff', '#c62828')):
+        fig.add_hline(y=b['battery'][key],
+                      line=dict(color=col, width=1.3, dash='dash'),
+                      annotation_text=f'{key} {b["battery"][key]} V',
+                      annotation_position='bottom left',
+                      annotation_font=dict(size=10, color=col),
+                      row=3, col=1)
+    fig.update_yaxes(title_text='volts', row=3, col=1)
+    fig.update_xaxes(title_text='time', row=3, col=1)
+ 
+    for ann in fig.layout.annotations[:3]:
+        ann.update(x=0, xanchor='left', font=dict(size=12.5))
+ 
+    fig.update_layout(
+        height=BATT_ROW_HEIGHT * 3 + 150, template='plotly_white',
+        margin=dict(t=60, l=70, r=20, b=45), dragmode='zoom',
+        legend=dict(orientation='h', y=-0.06, x=0, xanchor='left',
+                    font=dict(size=10)),
+        hovermode='closest')
+    return fig
+
 #%% ============================================================
 #   page template (tabs)
 #   ------------------------------------------------------------
@@ -1416,7 +2136,7 @@ PAGE = '''<!doctype html><html><head><meta charset="utf-8">
 <title>@@glider@@ - glider data</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>
- :root{--bg:#fafafa;--fg:#222;--hdr:#12354f;--nav:#e8ecef;--hint:#666}
+ :root{--bg:#fafafa;--fg:#222;--hdr:#354370;--nav:#e8ecef;--hint:#666}
  body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--fg)}
  header{padding:14px 20px;background:var(--hdr);color:#fff}
  header h1{margin:0;font-size:19px}
@@ -1434,6 +2154,60 @@ PAGE = '''<!doctype html><html><head><meta charset="utf-8">
    color:var(--fg);border-radius:4px}
  .subnav button.on{background:#4da3ff;border-color:#4da3ff;color:#fff}
  .sub{display:none} .sub.on{display:block}
+ .logtools{margin:0 0 8px 4px;display:flex;gap:14px;align-items:center;
+   flex-wrap:wrap;font-size:12.5px}
+ .logtools input[type=text]{padding:5px 9px;min-width:280px;font-size:13px;
+   border:1px solid rgba(128,128,128,.45);border-radius:4px;
+   background:transparent;color:var(--fg)}
+ .logwrap{max-height:78vh;overflow:auto;border:1px solid rgba(128,128,128,.3);
+   border-radius:5px}
+ table.logtable{border-collapse:collapse;width:100%;font-size:12.5px}
+ table.logtable th{position:sticky;top:0;background:var(--nav);
+   text-align:left;padding:8px 10px;font-weight:600;z-index:2;
+   border-bottom:1px solid rgba(128,128,128,.45)}
+ table.logtable td{padding:6px 10px;border-bottom:1px solid rgba(128,128,128,.18);
+   vertical-align:top}
+ table.logtable tbody tr:hover{background:rgba(77,163,255,.10)}
+ table.logtable td.mono{font-family:ui-monospace,Menlo,Consolas,monospace;
+   white-space:nowrap}
+ tr.oddity  td:first-child{box-shadow:inset 4px 0 0 #ffe680}
+ tr.warning td:first-child{box-shadow:inset 4px 0 0 #ffb020}
+ tr.error   td:first-child{box-shadow:inset 4px 0 0 #ff4d4d}
+ tr.warning{background:rgba(255,176,32,.13)}
+ tr.error{background:rgba(255,77,77,.18)}
+ /* an abort is the one row you must not scroll past: full-width magenta
+    wash, a heavy bar both sides, bold text and a border top and bottom */
+ tr.abort{background:rgba(192,38,211,.22);font-weight:600}
+ tr.abort td{border-top:2px solid #c026d3;border-bottom:2px solid #c026d3}
+ tr.abort td:first-child{box-shadow:inset 7px 0 0 #c026d3}
+ tr.abort td:last-child{box-shadow:inset -7px 0 0 #c026d3}
+ tr.abort:hover{background:rgba(192,38,211,.32)}
+ .abrt-note{color:#7a0f8c}
+ .abrt-toggle{padding:2px 8px;border-radius:4px;
+   background:rgba(192,38,211,.14);border:1px solid rgba(192,38,211,.45)}
+ .badge{display:inline-block;padding:1px 7px;margin:1px 3px 1px 0;
+   border-radius:9px;font-size:11px;font-weight:600;white-space:nowrap;
+   color:#3a2c00}
+ .badge.odd{background:#ffe680} .badge.warn{background:#ffb020}
+ .badge.err{background:#ff4d4d;color:#fff}
+ .badge.abrt{background:#c026d3;color:#fff;letter-spacing:.5px}
+ .quiet{color:var(--hint);font-weight:400}
+ .bcards{display:flex;flex-wrap:wrap;gap:10px;margin:2px 4px 10px}
+ .bcard{flex:1 1 150px;padding:9px 13px;border-radius:6px;
+   border:1px solid rgba(128,128,128,.3);background:rgba(128,128,128,.06)}
+ .bcard.wide{flex:1 1 260px}
+ .bcard.urgent{border-color:#c62828;background:rgba(198,40,40,.13)}
+ .bcard.warn{border-color:#e69500;background:rgba(230,149,0,.13)}
+ .blab{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;
+   color:var(--hint)}
+ .bval{font-size:20px;font-weight:600;margin:2px 0 1px;line-height:1.2}
+ .bcard.urgent .bval{color:#c62828} .bcard.warn .bval{color:#a86800}
+ .bsub{font-size:11px;color:var(--hint)}
+ .bbanner{padding:8px 13px;border-radius:6px;margin:2px 4px 9px;
+   font-weight:600;font-size:13px}
+ .bbanner.urgent{background:#c62828;color:#fff}
+ .bbanner.warn{background:#ffb020;color:#3a2c00}
+ .bnote{font-size:11.5px;color:var(--hint);margin:0 4px 10px;max-width:900px}
 </style></head><body>
 <header>
   <h1>@@glider@@</h1>
@@ -1456,11 +2230,32 @@ PAGE += '''<script>
    document.querySelectorAll('#'+tab+' .subnav button').forEach((x,k)=>x.classList.toggle('on',k==i));
    window.dispatchEvent(new Event('resize'));
  }
+ function filterLog(){
+   var t = document.getElementById('logsearch');
+   var q = t ? t.value.toLowerCase() : '';
+   var onlyBad = document.getElementById('logproblems');
+   onlyBad = onlyBad && onlyBad.checked;
+   var onlyAbort = document.getElementById('logaborts');
+   onlyAbort = onlyAbort && onlyAbort.checked;
+   var rows = document.querySelectorAll('#logtable tbody tr'), n = 0;
+   rows.forEach(function(r){
+     var cls = r.className || '';
+     var isAbort = cls.indexOf('abort') >= 0;
+     var bad = cls && cls !== 'ok';
+     var hit = !q || r.textContent.toLowerCase().indexOf(q) >= 0;
+     var show = hit && (!onlyBad || bad) && (!onlyAbort || isAbort);
+     r.style.display = show ? '' : 'none';
+     if (show) n++;
+   });
+   var c = document.getElementById('logcount');
+   if (c) c.textContent = n + ' / ' + rows.length + ' surfacings';
+ }
 '''
 
 PAGE += '''
  show(0);
  document.querySelectorAll('.sub-group').forEach(g=>showSub(g.id,0));
+ if (document.getElementById('logtable')) filterLog();
 </script></body></html>'''
 
 
@@ -1551,7 +2346,42 @@ def build(glider, bathy):
         add('Map + average currents', inner,
             'scroll to zoom, drag to pan | red arrows = depth-averaged '
             'current per surface-to-surface interval')
+        
+    if SHOW_LOGS:
+        surf, sens, devs = load_logs(glider)
+        if surf is not None:
+            panes = [('log book', logbook_html(surf))]
+            dh = device_health_fig(devs)
+            if dh is not None:
+                panes.append(('device health', embed(dh)))
+            kf = log_key_fig(sens)
+            if kf is not None:
+                panes.append(('housekeeping', embed(kf)))
+            sf = log_sensors_fig(sens)
+            if sf is not None:
+                panes.append(('all sensors', embed(sf)))
+ 
+            btns = ''.join(
+                f'<button onclick="showSub(\'logtab\',{k})">{name}</button>'
+                for k, (name, _) in enumerate(panes))
+            body = ''.join(f'<div class="sub">{html}</div>'
+                           for _, html in panes)
+            inner = (f'<div id="logtab" class="sub-group">'
+                     f'<div class="subnav">{btns}</div>{body}</div>')
+            add('Logs', inner,
+                'from the surface dialog | coloured rows = the glider picked '
+                'up a NEW error / warning / oddity on that dive')
 
+    if SHOW_BATTERY:
+        bat, bser, bdiv = load_battery(glider)
+        if bat is not None:
+            bfig = battery_fig(bat, bser, bdiv)
+            inner = battery_summary_html(bat) + (embed(bfig) if bfig else '')
+            add('Battery', inner,
+                'projection from the coulomb counter | the red line is the '
+                'latest you should start recovery, the shaded band runs to '
+                'critical')
+            
     links = ('gliders: ' + ' '.join(f'<a href="{g}.html">{g}</a>'
                                     for g in GLIDERS)) if len(GLIDERS) > 1 else ''
 

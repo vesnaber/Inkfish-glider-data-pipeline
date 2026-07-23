@@ -10,7 +10,7 @@ logs/<glider>_<timestamp>.log
 '''
 #%% ---------------- settings ----------------
 GLIDERS  = ['selkie', 'unit_1272']
-SCRIPTS  = ['00_build_sensor_list.py', '01_process_to_nc.py', '04_interactive_html.py', '05_interactive_html_merge_gliders.py']
+SCRIPTS  = ['00_build_sensor_list.py', '01_process_to_nc.py', '03_process_glider_logs.py', '03b_battery_status.py','04_interactive_html.py', '05_interactive_html_merge_gliders.py']
 PARALLEL = 2        # gliders at a time. 1 = sequential, and the output is
                     # then readable as one continuous log. Each glider has
                     # its own cache/ and rawnc/, so nothing is shared.

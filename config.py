@@ -53,6 +53,18 @@ BATHY_XYZ_DIR = DATA / 'bathymetry_xyz'      # ASCII "lon lat depth" grids,
                                              # for the 3D terrain
 BATHY_IMG_DIR = DATA / 'bathymetry_image'    # georeferenced image for the map
                                              # tab, plus a .bounds sidecar
+DATA_GLIDER   = DATA / f'{GLIDER}-from-glider'
+                                             # THE inbox. One folder per
+                                             # glider, no timestamp: new
+                                             # downloads just land here and
+                                             # the pipeline converts whatever
+                                             # is not already in
+                                             # rawnc/<glider>/segments/.
+GLIDER_LOGS   = DATA / f'{GLIDER}-logs'      # surface dialogs FROM the
+                                             # glider. Raw input, so it sits
+                                             # in data/ next to the binaries.
+                                             # NOT the repo-root logs/, which
+                                             # is this pipeline's own log.
 
 # per-glider inputs (hand-made / written by 00)
 DEPLOYMENT  = ROOT / f'deployment_{GLIDER}.yml'
@@ -71,13 +83,15 @@ RAWNC_MERGED = RAWNC / 'merged'              # merged flight + science
 L0_TS       = ROOT / 'L0-timeseries' / GLIDER
 L0_PROFILES = ROOT / 'L0-profiles' / GLIDER
 L0_GRID     = ROOT / 'L0-gridfiles' / GLIDER
+L0_LOGS     = ROOT / 'L0-logs' / GLIDER      # parsed surface dialogs (03)
 PLOTS       = ROOT / 'plots' / GLIDER
 HTML        = ROOT / 'interactive' / GLIDER
 STATE       = ROOT / '.state' / GLIDER       # stage fingerprints,
                                              # segments.csv, and the derived
                                              # *_used files
-for _d in (DATA, BATHY_XYZ_DIR, BATHY_IMG_DIR, CACHE, RAWNC_SEG,
-           RAWNC_MERGED, L0_TS, L0_PROFILES, L0_GRID, PLOTS, HTML, STATE):
+for _d in (DATA, BATHY_XYZ_DIR, BATHY_IMG_DIR, DATA_GLIDER, GLIDER_LOGS,
+           CACHE, RAWNC_SEG, RAWNC_MERGED, L0_TS, L0_PROFILES, L0_GRID,
+           L0_LOGS, PLOTS, HTML, STATE):
     _d.mkdir(parents=True, exist_ok=True)
 
 SCISUFFIX    = 'tbd' if REALTIME else 'ebd'
@@ -113,6 +127,31 @@ def find_bathy_xyz(verbose=True):
               f'using {hits[0].name}')
     return hits[0]
 
+LOG_SUFFIXES = ('.log', '.txt', '.dat', '.dlg', '')
+                        # '' matches extensionless files on purpose -
+                        # dockserver surface dialogs are saved under every
+                        # naming scheme there is.
+ 
+ 
+def find_glider_logs(glider=None, verbose=True):
+    '''Every surface-dialog file in data/<glider>-logs/, oldest name first.
+ 
+    No filtering on the glider name: the folder is already per glider, and
+    the dialogs are usually named by date or segment rather than by vehicle.
+    03_parse_logs.py drops any record whose "Vehicle Name:" turns out to
+    belong to someone else, so a stray file cannot contaminate the output.
+    '''
+    d = DATA / f'{glider or GLIDER}-logs'
+    if not d.exists():
+        if verbose:
+            print(f'   no {d.name}/ - nothing to parse')
+        return []
+    hits = sorted(p for p in d.rglob('*')
+                  if p.is_file() and not p.name.startswith('.')
+                  and p.suffix.lower() in LOG_SUFFIXES)
+    if verbose:
+        print(f'   {len(hits)} log files in {d.relative_to(ROOT)}/')
+    return hits
 
 def read_bounds(path):
     '''Geographic bounds for a map image, from a sidecar next to it.
@@ -199,56 +238,75 @@ def _matches_glider(path, glider=None):
     return (glider or GLIDER).lower() in path.name.lower()
 
 
-def all_data_dirs(glider=None, verbose=True, strict=True):
-    '''EVERY subfolder of data/ holding binaries for `glider`, oldest first.
+def glider_inbox(glider=None):
+    '''data/<glider>-from-glider - the one folder binaries go in.'''
+    return DATA / f'{glider or GLIDER}-from-glider'
 
-    01 converts all of them: downloads are not always cumulative, so using
-    only the newest folder silently drops everything that came before.
-    Already-converted segments are skipped, so extra folders are nearly free.
+
+def legacy_data_dirs(glider=None, verbose=True):
+    '''Old timestamped download folders that still hold binaries.
+
+    They are still processed, so nothing is lost while you migrate - but
+    they are reported with the exact mv command, because one growing inbox
+    is the whole point and half-migrated data is easy to forget about.
     '''
     glider = glider or GLIDER
+    inbox = glider_inbox(glider)
+    hits = sorted(d for d in DATA.iterdir()
+                  if d.is_dir() and d.resolve() != inbox.resolve()
+                  and not d.name.lower().endswith('-logs')
+                  and _matches_glider(d, glider)
+                  and binaries_in(d, GLIDERSUFFIX))
+    if hits and verbose:
+        n = sum(len(binaries_in(d, GLIDERSUFFIX)) for d in hits)
+        print(f'  {len(hits)} legacy folder(s) with {n} *.{GLIDERSUFFIX} '
+              f'still outside the inbox - consolidate with:')
+        for d in hits:
+            print(f'    mv {d}/* {inbox}/ && rmdir {d}')
+    return hits
 
-    def binaries(d):
-        return binaries_in(d, GLIDERSUFFIX)
 
-    with_bins = [d for d in DATA.iterdir() if d.is_dir() and binaries(d)]
-    if not with_bins:
-        raise FileNotFoundError(
-            f'no folder in {DATA} contains *.{GLIDERSUFFIX} files.\n'
-            f'Put your download folder in data/ (or set REALTIME correctly).')
+def all_data_dirs(glider=None, verbose=True, strict=True):
+    '''Folders holding binaries for `glider`, INBOX LAST.
 
-    mine = [d for d in with_bins
-            if _matches_glider(d, glider)
-            or any(_matches_glider(f, glider) for f in binaries(d))]
+    Ordering matters: callers that want a representative sample of the
+    newest data use the last entry, and the inbox is where new downloads
+    arrive. Conversion is incremental against rawnc/<glider>/segments/, so
+    re-listing the whole inbox every run costs nothing.
+    '''
+    glider = glider or GLIDER
+    inbox = glider_inbox(glider)
+    inbox.mkdir(parents=True, exist_ok=True)
 
-    if not mine:
-        msg = (f'no folder in {DATA} holds *.{GLIDERSUFFIX} files for '
-               f'"{glider}".\nFolders with binaries: '
-               f'{", ".join(d.name for d in sorted(with_bins))}\n'
-               f'Check GLIDER, or call all_data_dirs(strict=False).')
+    dirs = legacy_data_dirs(glider, verbose=verbose)
+    n_inbox = len(binaries_in(inbox, GLIDERSUFFIX))
+    if n_inbox:
+        dirs = dirs + [inbox]
+
+    if not dirs:
+        msg = (f'no *.{GLIDERSUFFIX} files for "{glider}".\n'
+               f'Put them in:  {inbox}\n'
+               f'(one folder, no timestamp - new downloads just add to it)')
         if strict:
             raise FileNotFoundError(msg)
         print(f'WARNING: {msg}')
-        mine = with_bins
+        return []
 
-    mine = sorted(mine, key=lambda d: d.name)
     if verbose:
-        n = sum(len(binaries(d)) for d in mine)
-        print(f'DATA [{glider}]: {len(mine)} folders, {n} '
-              f'*.{GLIDERSUFFIX} files')
-        for d in mine:
-            print(f'    {d.name}  ({len(binaries(d))} files)')
-        other = [x.name for x in with_bins if x not in mine]
-        if other:
-            print(f'  (ignored, other gliders: {", ".join(sorted(other))})')
-    return mine
+        n = sum(len(binaries_in(d, GLIDERSUFFIX)) for d in dirs)
+        done = len(list(RAWNC_SEG.glob('*.nc')))
+        print(f'DATA [{glider}]: {n} *.{GLIDERSUFFIX} across {len(dirs)} '
+              f'folder(s); {done} segments already converted')
+        print(f'  inbox: {inbox.name}  ({n_inbox} files)'
+              + ('   <-- EMPTY' if not n_inbox else ''))
+    return dirs
 
 
 def latest_data_dir(glider=None, verbose=True, strict=True):
-    '''Newest folder only. Kept for 00_build_sensor_list.py, which just needs
-    a representative sample of binaries. 01 uses all_data_dirs() instead.'''
-    return all_data_dirs(glider, verbose=verbose, strict=strict)[-1]
-
+    '''The inbox when it has data, otherwise the newest legacy folder.
+    00_build_sensor_list.py uses this - it only needs a sample.'''
+    d = all_data_dirs(glider, verbose=verbose, strict=strict)
+    return d[-1] if d else None
 
 def newest_nc(folder, must_contain=None, strict=True):
     '''Newest .nc in `folder` belonging to `must_contain` (defaults to
@@ -530,6 +588,11 @@ if __name__ == '__main__':
     _i, _b = bathy_image()
     print(f'  map image  : {_i.name if _i else "none"}'
           f'{f"  bounds {_b}" if _b else ""}')
+
+    _logs = find_glider_logs(verbose=False)
+    print(f'\\nsurface dialogs: {len(_logs)} files in '
+          f'{GLIDER_LOGS.relative_to(ROOT)}/'
+          f'{"   <-- empty, Logs tab will be skipped" if not _logs else ""}')
 
     all_data_dirs()
     segment_table()

@@ -33,7 +33,7 @@ After cloning:
 ```bash
 conda create -n gliderwork python=3.12
 conda activate gliderwork
-conda install -c conda-forge pyglider dbdreader cmocean gsw plotly pyshp netcdf4
+conda install -c conda-forge pyglider dbdreader cmocean gsw plotly  pyshp netcdf4 pyarrow
 
 python fresh_start.py
 ```

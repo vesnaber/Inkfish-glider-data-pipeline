@@ -1,0 +1,28 @@
+{
+  "operational_scenarios": [
+    {
+      "config_name": "extreme_low_power",
+      "dive_hours": 6.23,
+      "ah_per_dive": 1.05,
+      "description": "no science, 300cc, low power flight"
+    },
+    {
+      "config_name": "normal_low_power",
+      "dive_hours": 6.0,
+      "ah_per_dive": 1.56,
+      "description": "full science, 300cc, low power 15s"
+    },
+    {
+      "config_name": "normal_flight",
+      "dive_hours": 5.7,
+      "ah_per_dive": 2.901,
+      "description": "full science, 400cc, low power 0s"
+    },
+    {
+      "config_name": "coastal_flight",
+      "dive_hours": 4.0,
+      "ah_per_dive": 3.56,
+      "description": "full science, 500cc, low power 0s"
+    }
+  ]
+}

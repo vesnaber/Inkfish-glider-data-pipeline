@@ -25,9 +25,13 @@ OPTIONAL = {
     'gsw':     'salinity + potential density (those panels vanish without it)',
     'pandas':  'much faster reading of the bathymetry grid',
     'netCDF4': 'netcdf engine for xarray',
+    'pyarrow': 'parquet from 03_parse_logs.py (falls back to CSV without it)',
 }
 
-SHARED = ['data', 'data/bathymetry_xyz', 'data/bathymetry_image', 'logs']
+SHARED = ['data', 'data/bathymetry_xyz', 'data/bathymetry_image',
+          'logs']              # 'logs' is THIS pipeline's own log output.
+                               # The glider's surface dialogs go in
+                               # data/<glider>-logs/, made per glider below.
 
 PER_GLIDER_NOTE = ('cache, rawnc/segments, rawnc/merged, L0-timeseries, '
                    'L0-profiles, L0-gridfiles, plots, interactive, .state')
@@ -135,17 +139,43 @@ for g in gliders:
         print(f'    todo     {sl.name} - run:  '
               f'GLIDER={g} python 00_build_sensor_list.py')
 
-    dirs = [d for d in (ROOT / 'data').iterdir()
-            if d.is_dir() and g.lower() in d.name.lower()]
-    if dirs:
-        n = sum(len(list(d.glob('*.[st]bd'))) + len(list(d.glob('*.[de]bd')))
-                for d in dirs)
-        print(f'    ok       {len(dirs)} download folder(s), ~{n} binaries')
+    inbox = ROOT / 'data' / f'{g}-from-glider'
+    inbox.mkdir(parents=True, exist_ok=True)
+
+    def _bins(d):
+        return (len(list(d.glob('*.[st]bd'))) + len(list(d.glob('*.[de]bd'))))
+
+    n_inbox = _bins(inbox)
+    legacy = [d for d in (ROOT / 'data').iterdir()
+              if d.is_dir() and d != inbox and _bins(d)
+              and g.lower() in d.name.lower()
+              and not d.name.lower().endswith('-logs')]
+
+    if n_inbox:
+        print(f'    ok       data/{g}-from-glider/  ({n_inbox} binaries)')
     else:
         ok = False
-        print(f'    MISSING  no folder in data/ with "{g}" in its name.')
-        print(f'             Copy the dockserver folder in as it comes:')
-        print(f'             data/{g}-from-glider-<timestamp>/')
+        print(f'    EMPTY    data/{g}-from-glider/  - binaries go here.')
+        print(f'             One folder, no timestamp. New downloads just')
+        print(f'             add to it; already-converted files are skipped.')
+    if legacy:
+        n = sum(_bins(d) for d in legacy)
+        print(f'    legacy   {len(legacy)} timestamped folder(s), {n} '
+              f'binaries - still processed, but move them in:')
+        for d in legacy:
+            print(f'               mv data/{d.name}/* data/{g}-from-glider/')
+ 
+    lg = ROOT / 'data' / f'{g}-logs'
+    lg.mkdir(parents=True, exist_ok=True)
+    logs = [p for p in lg.rglob('*')
+            if p.is_file() and not p.name.startswith('.')]
+    if logs:
+        mb = sum(p.stat().st_size for p in logs) / 1e6
+        print(f'    ok       data/{g}-logs/  ({len(logs)} files, {mb:.1f} MB)')
+    else:
+        print(f'    empty    data/{g}-logs/  - put the surface dialogs here.')
+        print(f'             Optional: without them 03_parse_logs.py has')
+        print(f'             nothing to do and the Logs tab is skipped.')
 
 
 #%% ============================================================
@@ -202,7 +232,10 @@ else:
         print(f'  GLIDER={g} python 00_build_sensor_list.py')
     print('  python run_gliders.py        # all gliders, all steps')
     print('  (or one at a time: GLIDER=<name> python 01_process_to_nc.py)')
-    print('\n  set GLIDERS in run_gliders.py to the list above.')
+    if any((ROOT / 'data' / f'{g}-logs').exists()
+           and any((ROOT / 'data' / f'{g}-logs').iterdir()) for g in gliders):
+        print('  GLIDER=<name> python 03_parse_logs.py   # surface dialogs')
+    print('\\n  set GLIDERS in run_gliders.py to the list above.')
 
 print()
 

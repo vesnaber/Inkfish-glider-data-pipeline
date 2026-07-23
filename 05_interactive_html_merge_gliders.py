@@ -62,7 +62,7 @@ if DEFAULT:
 PAGE = '''<!doctype html><html><head><meta charset="utf-8">
 <title>@@title@@</title>
 <style>
- :root{--bg:#fafafa;--fg:#222;--hdr:#12354f;--nav:#e8ecef;--hint:#666}
+:root{--bg:#fafafa;--fg:#222;--hdr:#1f2b52;--nav:#e8ecef;--hint:#666}
  html,body{height:100%;margin:0}
  body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);
    display:flex;flex-direction:column}
@@ -70,11 +70,11 @@ PAGE = '''<!doctype html><html><head><meta charset="utf-8">
  header h1{margin:0;font-size:18px}
  header .meta{font-size:12.5px;opacity:.85;margin-top:3px}
  header a{color:#9fd0ff}
- nav{display:flex;gap:2px;background:var(--nav);padding:0 14px;flex:0 0 auto;
+ nav{display:flex;gap:2px;background:#ccd6eb;padding:0 14px;flex:0 0 auto;
    align-items:center;flex-wrap:wrap}
  nav button{border:0;padding:11px 20px;background:none;cursor:pointer;
    font-size:14px;border-bottom:3px solid transparent;color:var(--fg)}
- nav button.on{background:var(--bg);border-bottom-color:#4da3ff;font-weight:600}
+ nav button.on{background:var(--bg);border-bottom-color:#354370;font-weight:600}
  nav .info{margin-left:auto;font-size:12px;color:var(--hint);padding-right:6px}
  .frames{flex:1 1 auto;position:relative}
  iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none;

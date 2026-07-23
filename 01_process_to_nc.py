@@ -23,9 +23,13 @@ Select the glider per process:
 #%% ---------------- settings ----------------
 import config
 
-DATA_DIRS = None    # None = every download folder in data/ for THIS glider.
+DATA_DIRS = None    # None = data/<glider>-from-glider/ plus any legacy
+                    # timestamped folders still lying around. Conversion is
+                    # incremental against rawnc/<glider>/segments/, so
+                    # dropping new binaries into the inbox and rerunning
+                    # only converts the new ones.
                     # Or a list of paths to restrict it:
-                    # ['./data/selkie-from-glider-20260721T154333']
+                    # ['./data/selkie-from-glider']
 
 FORCE = None        # None | 'rawnc' | 'merge' | 'timeseries' | 'profiles'
                     # | 'grid' | 'all'
