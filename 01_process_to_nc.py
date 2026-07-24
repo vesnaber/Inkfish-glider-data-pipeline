@@ -81,6 +81,18 @@ import pyglider.utils as pgutils
 
 logging.basicConfig(level='INFO')
 
+# pyglider's merge does open_mfdataset(<all segments>, lock=False). With
+# dask's default THREADED scheduler that segfaults whenever the
+# netCDF4/HDF5 build is not thread safe - typically pip wheels (the VM's
+# .venv), while conda builds usually are (why the same merge works on the
+# laptop). Single-threaded reading costs a few seconds at this file count
+# and cannot segfault.
+try:
+    import dask
+    dask.config.set(scheduler='synchronous')
+except ImportError:
+    pass
+
 if NEW_XARRAY_COMBINE:
     xr.set_options(use_new_combine_kwarg_defaults=True)
 
