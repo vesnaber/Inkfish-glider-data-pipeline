@@ -2,15 +2,11 @@ c_battpos
 c_de_oil_vol
 c_fin
 c_heading
-c_wpt_lat
-c_wpt_lon
 m_altitude
 m_battpos
 m_de_oil_vol
 m_depth
 m_fin
-m_final_water_vx
-m_final_water_vy
 m_gps_lat
 m_gps_lon
 m_heading
@@ -18,9 +14,7 @@ m_lat
 m_lon
 m_pitch
 m_present_time
-m_pressure
 m_roll
-m_water_depth
 m_water_vx
 m_water_vy
 sci_flbbcd_chlor_units

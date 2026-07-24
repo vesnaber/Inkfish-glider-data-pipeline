@@ -54,7 +54,7 @@ GLIDER = os.environ.get('GLIDER', 'selkie')
 # True  -> VM   : realtime sbd (flight) / tbd (science)
 # False -> local: recovered full-res dbd (flight) / ebd (science)
 # Override with  REALTIME=0 python ...
-REALTIME = os.environ.get('REALTIME', '1').lower() not in ('0', 'false', 'no')
+REALTIME = os.environ.get('REALTIME', '0').lower() not in ('0', 'false', 'no')
 
 # Where the VM keeps the incoming stream. Only used when the layout is 'vm'.
 VM_DATA_ROOT = '~/data/rt-data'
@@ -149,8 +149,8 @@ elif not DATA_ROOT.exists():
           f'         Set GLIDER_DATA_ROOT, or REALTIME=0 for the local '
           f'layout.')
 
-SCISUFFIX    = 'tbd' if REALTIME else 'ebd'
-GLIDERSUFFIX = 'sbd' if REALTIME else 'dbd'
+SCISUFFIX    = 'tbd' if REALTIME else 'tbd'
+GLIDERSUFFIX = 'sbd' if REALTIME else 'sbd'
 
 
 def where(verbose=True):
@@ -168,6 +168,8 @@ def where(verbose=True):
         f'  dialogs  : {GLIDER_LOGS}'
         + ('' if GLIDER_LOGS.exists() else '   <-- MISSING'),
         f'outputs    : {ROOT}',
+        f'dep. start : {deployment_start() or "not in yml - no date filter"}'
+        + ('' if FILE_FILTER else '   (GLIDER_FILE_FILTER=0: filter OFF)'),
     ]
     if verbose:
         print('\n'.join(lines))
@@ -291,8 +293,88 @@ def bathy_image(verbose=True):
 
 #%% ============================================================
 #   finding the right files for THIS glider
+#   ------------------------------------------------------------
+#   Only binaries named  <glider>-YYYY-DDD-M-S.<ext>  (or with _ as the
+#   separator) are accepted, and only when the mission date in the name is
+#   on/after deployment_start: in the yml. Everything else - other gliders,
+#   8.3 DOS names, older missions still sitting in the download folder - is
+#   excluded and reported ONCE per folder. This is what stops old datasets
+#   from crashing the conversion (missing caches) or polluting the merge.
+#
+#   Escape hatch if a dataset ever arrives with 8.3 names (straight off the
+#   glider flash):  GLIDER_FILE_FILTER=0 python 01_process_to_nc.py
 #   ============================================================
-def binaries_in(folder, ext):
+import re
+
+FILE_FILTER = os.environ.get('GLIDER_FILE_FILTER', '1').lower() \
+    not in ('0', 'false', 'no')
+
+# name-YYYY-DDD-M-S ;  - and _ both accepted as separators
+_BIN_RE = re.compile(r'^(?P<name>.+?)[-_](?P<year>(?:19|20)\d{2})'
+                     r'[-_](?P<yday>\d{1,3})[-_]\d+[-_]\d+$', re.I)
+
+_DEP_START = {}          # glider -> np.datetime64 or None (cached)
+
+
+def deployment_start(glider=None):
+    '''metadata:deployment_start from deployment_<glider>.yml as a
+    np.datetime64, or None. Top-level deployment_start is accepted too -
+    GUESSING!! that some ymls keep it outside metadata; both are checked so
+    either spelling works.'''
+    g = glider or GLIDER
+    if g in _DEP_START:
+        return _DEP_START[g]
+    start = None
+    yml = ROOT / f'deployment_{g}.yml'
+    if yml.exists():
+        import yaml
+        try:
+            dep = yaml.safe_load(yml.read_text()) or {}
+            raw = ((dep.get('metadata') or {}).get('deployment_start')
+                   or dep.get('deployment_start'))
+            if raw:
+                start = np.datetime64(
+                    str(raw).strip().replace('Z', '').replace(' ', 'T')[:19])
+        except Exception as e:
+            print(f'   could not read deployment_start from {yml.name}: {e}')
+    _DEP_START[g] = start
+    return start
+
+
+def binary_date(path):
+    '''Mission date encoded in a Slocum long file name, or None.
+    selkie-2026-197-3-43.sbd -> 2026-01-01 + 197 days.
+    GUESSING!! that the yearday in Slocum names is 0-based (day 0 = Jan 1);
+    accept_binary() compares with one day of slack either way, so an
+    off-by-one here cannot drop real data.'''
+    m = _BIN_RE.match(Path(path).stem)
+    if not m:
+        return None
+    return (np.datetime64(f'{m["year"]}-01-01')
+            + np.timedelta64(int(m['yday']), 'D'))
+
+
+def accept_binary(path, glider=None):
+    '''-> (keep: bool, why: str). why is "" | "name" | "old".
+    Keep = long Slocum name, glider name matches, mission date on/after
+    deployment_start (minus 1 day slack; the date in the name is the day the
+    MISSION started, which can precede the yml start slightly).'''
+    m = _BIN_RE.match(Path(path).stem)
+    g = (glider or GLIDER).lower().replace('_', '-')
+    if not m or m['name'].lower().replace('_', '-') != g:
+        return False, 'name'
+    start = deployment_start(glider)
+    if start is not None:
+        d = binary_date(path)
+        if d is not None and d < start - np.timedelta64(1, 'D'):
+            return False, 'old'
+    return True, ''
+
+
+_FILTER_REPORTED = set()
+
+
+def _raw_binaries_in(folder, ext):
     '''All *.ext in a folder, de-duplicated across upper/lower case.
     On case-insensitive filesystems (macOS, Windows) glob('*.sbd') and
     glob('*.SBD') return the SAME files, so globbing both and concatenating
@@ -302,6 +384,72 @@ def binaries_in(folder, ext):
         for f in Path(folder).glob(pat):
             seen[f.resolve()] = f
     return sorted(seen.values())
+
+
+def binaries_in(folder, ext, glider=None, filtered=None):
+    '''Binaries in `folder` that belong to THIS glider and THIS deployment
+    (see the header of this section). filtered=False returns everything.'''
+    files = _raw_binaries_in(folder, ext)
+    if filtered is None:
+        filtered = FILE_FILTER
+    if not filtered or not files:
+        return files
+
+    keep, bad_name, too_old = [], [], []
+    for f in files:
+        ok, why = accept_binary(f, glider)
+        (keep if ok else (too_old if why == 'old' else bad_name)).append(f)
+
+    tag = (str(Path(folder).resolve()), ext)
+    if (bad_name or too_old) and tag not in _FILTER_REPORTED:
+        _FILTER_REPORTED.add(tag)
+        start = deployment_start(glider)
+        print(f'  {Path(folder).name}: excluding '
+              f'{len(bad_name) + len(too_old)}/{len(files)} *.{ext} '
+              f'({len(bad_name)} not named <glider>-YYYY-DDD-M-S, '
+              f'{len(too_old)} from before deployment_start '
+              f'{str(start)[:10] if start is not None else "?"})')
+        if not keep:
+            print(f'    !! NOTHING left after filtering. If these files are '
+                  f'real (e.g. 8.3 names off the\n'
+                  f'    glider flash), rerun with GLIDER_FILE_FILTER=0, or '
+                  f'rename them to the long form.')
+    return keep
+
+
+def stage_inputs(folder, glider=None, verbose=True):
+    '''pyglider is handed a whole DIRECTORY and converts every binary in it,
+    so filtering the file LIST is not enough - old/foreign files in the
+    folder would still be read (and crash on missing caches). This links the
+    accepted binaries of `folder` into .state/<glider>/staged/<name>/ and
+    returns that path; the converter can then only see the right files.
+    Symlinks where possible, copies where not (Windows). Any *.cac cache
+    files sitting next to the binaries are copied into CACHE too - the
+    realtime stream ships them alongside the data.'''
+    folder = Path(folder)
+    dest = STATE / 'staged' / folder.name
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True)
+    n = 0
+    for ext in (GLIDERSUFFIX, SCISUFFIX):
+        for f in binaries_in(folder, ext, glider):
+            link = dest / f.name
+            try:
+                link.symlink_to(f.resolve())
+            except OSError:
+                shutil.copy2(f, link)
+            n += 1
+    n_cac = 0
+    for pat in ('*.cac', '*.CAC'):
+        for c in folder.glob(pat):
+            tgt = CACHE / c.name.lower()
+            if not tgt.exists():
+                shutil.copy2(c, tgt)
+                n_cac += 1
+    if verbose:
+        print(f'      staged {n} accepted binaries'
+              + (f' + {n_cac} new cache files' if n_cac else ''))
+    return dest
 
 
 def _matches_glider(path, glider=None):

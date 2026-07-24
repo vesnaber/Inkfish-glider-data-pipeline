@@ -187,6 +187,12 @@ K_RAW = config.stage_key('rawnc', {
     'sensors': sorted(usable),
     'yml': YML_FINGERPRINT,
     'suffixes': [config.GLIDERSUFFIX, config.SCISUFFIX],
+    # the input filter is part of the settings: changing deployment_start
+    # (or switching the filter off) rebuilds the archive, which is how
+    # already-converted OLD-mission segments get purged - the rebuild only
+    # ever sees the staged, filtered inputs.
+    'deployment_start': str(config.deployment_start()),
+    'file_filter': config.FILE_FILTER,
 })
 rebuild_raw, why = config.needs_rerun('rawnc', K_RAW, force=forced('rawnc'))
 
@@ -200,8 +206,18 @@ before = config.dir_signature(config.RAWNC_SEG)
 for i, d in enumerate(data_dirs, 1):
     n_before = len(list(config.RAWNC_SEG.glob('*.nc')))
     print(f'  [{i}/{len(data_dirs)}] {d.name}')
+    # pyglider converts EVERY binary in the folder it is given, so it gets a
+    # staged copy holding only the accepted files (this glider, this
+    # deployment). On the VM the inbox is the ingestion service's tree and
+    # may hold older missions whose caches are gone - those crashed the
+    # conversion here before.
+    staged = config.stage_inputs(d)
+    if not any(staged.iterdir()):
+        print('      -> no accepted binaries in this folder, skipping')
+        continue
     slocum.binary_to_rawnc(
-        str(d) + '/', str(config.RAWNC_SEG) + '/', str(config.CACHE) + '/',
+        str(staged) + '/', str(config.RAWNC_SEG) + '/',
+        str(config.CACHE) + '/',
         str(SENSORS_USED), str(DEPLOY_USED),
         incremental=not rebuild_raw,     # False only when we just wiped it
         scisuffix=config.SCISUFFIX, glidersuffix=config.GLIDERSUFFIX)
@@ -323,23 +339,5 @@ else:
 print(f'  -> {gridname}')
 tick('grid')
 
-
-# #%% ---------------- quick look ----------------
-# with xr.open_dataset(gridname) as g:
-#     have = [v for v in PRELIM_VARS if v in g]
-#     print(f'\ngrid has {g.time.size} profiles, '
-#           f'down to {float(g.depth.max()):.0f} m, '
-#           f'{str(g.time.values[0])[:16]} to {str(g.time.values[-1])[:16]}')
-
-# outpng = config.PLOTS / PRELIM_NAME
-# pgutils.example_gridplot(gridname, str(outpng), ylim=[None, None], toplot=have)
-# tick('quicklook')
-
-# if TIMING:
-#     print('\ntime per stage:')
-#     for k, v in sorted(_TIMES.items(), key=lambda kv: -kv[1]):
-#         print(f'  {k:12s} {v:7.1f} s')
-# print(f'\nDONE ({config.GLIDER}) in {time.time() - _T0:.0f} s. '
-#       f'Quick look: {outpng}')
 
 # %%

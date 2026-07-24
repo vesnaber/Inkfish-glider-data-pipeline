@@ -1335,13 +1335,13 @@ def map_fig(ts, bathy):
     time + depth-averaged current arrows.'''
     if not {'longitude', 'latitude'} <= set(ts.data_vars) | set(ts.coords):
         print('   no position - skipping the map')
-        return None
+        return None, None
     lon = np.asarray(ts['longitude'].values, float)
     lat = np.asarray(ts['latitude'].values, float)
     ok = np.isfinite(lon) & np.isfinite(lat)
     if ok.sum() == 0:
         print('   position is all NaN - skipping the map')
-        return None
+        return None, None
     lon, lat, times = lon[ok], lat[ok], np.asarray(ts.time.values)[ok]
 
     cur = surface_intervals(ts) if SHOW_CURRENTS else None
@@ -1393,6 +1393,23 @@ def map_fig(ts, bathy):
         text=[str(t)[:19] for t in ttime],
         hovertemplate='%{text}<br>%{lat:.4f}, %{lon:.4f}<extra></extra>'))
 
+    # ---- time-window highlight (filled from JS, starts empty) -----------
+    # Big orange rings over the surfacings inside a user-chosen period, so
+    # "where was the glider when the data went weird" is one date entry
+    # away. The JS lives next to the map in build().
+    fig.add_trace(go.Scattermap(
+        lon=[], lat=[], mode='lines+markers',
+        line=dict(width=3, color='#ff6a00'),
+        marker=dict(size=SURFACE_MARKER_SIZE + 6, color='#ff6a00',
+                    opacity=0.85),
+        name='highlight',
+        text=[],
+        hovertemplate='highlighted<br>%{text}<br>'
+                      '%{lat:.4f}, %{lon:.4f}<extra></extra>'))
+    hl = dict(t=[str(t)[:19] for t in ttime],
+              lon=[round(float(x), 5) for x in tlon],
+              lat=[round(float(y), 5) for y in tlat])
+
     if cur is not None:
         for tr in current_arrows(cur):
             fig.add_trace(tr)
@@ -1417,7 +1434,67 @@ def map_fig(ts, bathy):
         height=740, margin=dict(t=50, l=0, r=0, b=0),
         legend=dict(orientation='h', y=1.02),
         title='Map + average currents')
-    return fig
+    return fig, hl
+
+
+def map_highlight_controls(hl, div_id):
+    '''Date pickers + buttons above the map, and the JS that restyles the
+    "highlight" trace of `div_id`. Naive-UTC strings compared as strings, so
+    no timezone can shift anything.'''
+    tmin, tmax = hl['t'][0][:16], hl['t'][-1][:16]
+    data = json.dumps(hl, separators=(',', ':'))
+    return f'''
+<div class="logtools">
+  <b>highlight period</b>
+  from <input type="datetime-local" id="hl0" step="60"
+              min="{tmin}" max="{tmax}" value="{tmin}">
+  to <input type="datetime-local" id="hl1" step="60"
+            min="{tmin}" max="{tmax}" value="{tmax}">
+  <button onclick="mapHL()">highlight</button>
+  <button onclick="mapHLlast(24)">last 24 h</button>
+  <button onclick="mapHLlast(72)">last 3 d</button>
+  <button onclick="mapHLclear()">clear</button>
+  <span id="hlcount" class="quiet"></span>
+</div>
+<script>
+ const HLD = {data};
+ HLD.div = "{div_id}";
+ function _hlIdx() {{
+   const gd = document.getElementById(HLD.div);
+   return gd && gd.data ? gd.data.findIndex(t => t.name === 'highlight') : -1;
+ }}
+ function mapHL() {{
+   const k = _hlIdx(); if (k < 0) return;
+   let a = document.getElementById('hl0').value || HLD.t[0];
+   let b = document.getElementById('hl1').value || HLD.t[HLD.t.length - 1];
+   if (b.length === 16) b += ':59';        // include the whole end minute
+   const lon = [], lat = [], txt = [];
+   for (let i = 0; i < HLD.t.length; i++) {{
+     if (HLD.t[i] >= a && HLD.t[i] <= b) {{
+       lon.push(HLD.lon[i]); lat.push(HLD.lat[i]);
+       txt.push(HLD.t[i].replace('T', ' '));
+     }}
+   }}
+   Plotly.restyle(HLD.div, {{lon: [lon], lat: [lat], text: [txt]}}, [k]);
+   document.getElementById('hlcount').textContent =
+     lon.length + ' of ' + HLD.t.length + ' surfacings in window';
+ }}
+ function mapHLlast(hours) {{
+   const end = HLD.t[HLD.t.length - 1];
+   const d = new Date(end.slice(0, 19) + 'Z');        // naive UTC in -> UTC
+   const s = new Date(d.getTime() - hours * 3600e3);
+   document.getElementById('hl0').value = s.toISOString().slice(0, 16);
+   document.getElementById('hl1').value = end.slice(0, 16);
+   mapHL();
+ }}
+ function mapHLclear() {{
+   const k = _hlIdx(); if (k < 0) return;
+   Plotly.restyle(HLD.div, {{lon: [[]], lat: [[]], text: [[]]}}, [k]);
+   document.getElementById('hl0').value = "{tmin}";
+   document.getElementById('hl1').value = "{tmax}";
+   document.getElementById('hlcount').textContent = '';
+ }}
+</script>'''
 
 
 def rose_fig(ts):
@@ -2262,8 +2339,9 @@ PAGE += '''
 #%% ============================================================
 #   build
 #   ============================================================
-def embed(fig):
+def embed(fig, div_id=None):
     return pio.to_html(fig, include_plotlyjs=False, full_html=False,
+                       div_id=div_id,
                        config={'displaylogo': False, 'responsive': True})
 
 
@@ -2331,21 +2409,24 @@ def build(glider, bathy):
             'drag to rotate, scroll to zoom | the slider picks a time RANGE '
             '(single chunk or several in a row)')
 
-    mp = map_fig(ts, bathy)
+    mp, hl = map_fig(ts, bathy)
     rose = rose_fig(ts) if SHOW_CURRENT_ROSE else None
     if mp is not None:
+        map_html = (map_highlight_controls(hl, 'mapdiv') if hl else '') \
+            + embed(mp, div_id='mapdiv')
         if rose is not None:
             inner = ('<div id="maptab" class="sub-group"><div class="subnav">'
                      '<button onclick="showSub(\'maptab\',0)">map</button>'
                      '<button onclick="showSub(\'maptab\',1)">current rose</button>'
                      '</div>'
-                     f'<div class="sub">{embed(mp)}</div>'
+                     f'<div class="sub">{map_html}</div>'
                      f'<div class="sub">{embed(rose)}</div></div>')
         else:
-            inner = embed(mp)
+            inner = map_html
         add('Map + average currents', inner,
             'scroll to zoom, drag to pan | red arrows = depth-averaged '
-            'current per surface-to-surface interval')
+            'current per surface-to-surface interval | pick a period above '
+            'the map to see WHERE the glider was then')
         
     if SHOW_LOGS:
         surf, sens, devs = load_logs(glider)
