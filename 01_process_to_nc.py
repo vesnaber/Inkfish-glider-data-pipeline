@@ -324,22 +324,22 @@ print(f'  -> {gridname}')
 tick('grid')
 
 
-#%% ---------------- quick look ----------------
-with xr.open_dataset(gridname) as g:
-    have = [v for v in PRELIM_VARS if v in g]
-    print(f'\ngrid has {g.time.size} profiles, '
-          f'down to {float(g.depth.max()):.0f} m, '
-          f'{str(g.time.values[0])[:16]} to {str(g.time.values[-1])[:16]}')
+# #%% ---------------- quick look ----------------
+# with xr.open_dataset(gridname) as g:
+#     have = [v for v in PRELIM_VARS if v in g]
+#     print(f'\ngrid has {g.time.size} profiles, '
+#           f'down to {float(g.depth.max()):.0f} m, '
+#           f'{str(g.time.values[0])[:16]} to {str(g.time.values[-1])[:16]}')
 
-outpng = config.PLOTS / PRELIM_NAME
-pgutils.example_gridplot(gridname, str(outpng), ylim=[None, None], toplot=have)
-tick('quicklook')
+# outpng = config.PLOTS / PRELIM_NAME
+# pgutils.example_gridplot(gridname, str(outpng), ylim=[None, None], toplot=have)
+# tick('quicklook')
 
-if TIMING:
-    print('\ntime per stage:')
-    for k, v in sorted(_TIMES.items(), key=lambda kv: -kv[1]):
-        print(f'  {k:12s} {v:7.1f} s')
-print(f'\nDONE ({config.GLIDER}) in {time.time() - _T0:.0f} s. '
-      f'Quick look: {outpng}')
+# if TIMING:
+#     print('\ntime per stage:')
+#     for k, v in sorted(_TIMES.items(), key=lambda kv: -kv[1]):
+#         print(f'  {k:12s} {v:7.1f} s')
+# print(f'\nDONE ({config.GLIDER}) in {time.time() - _T0:.0f} s. '
+#       f'Quick look: {outpng}')
 
 # %%

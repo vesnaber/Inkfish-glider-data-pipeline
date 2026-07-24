@@ -4,12 +4,38 @@ ONE place to set the glider and the paths. Every script imports this, so a
 new user only edits this file (plus deployment_<glider>.yml) after cloning.
 Paths auto-detect from this file's location -> works on laptop / EC2 / Mac.
 
+TWO DEPLOYMENTS, ONE REPO
+-------------------------
+The same pipeline runs in two places, and they keep their glider data in
+different shapes:
+
+  REALTIME=1   the VM.  Near-real-time stream, sbd/tbd binaries, data fed in
+               by the ingestion service and living OUTSIDE the repo:
+                   ~/data/rt-data/<glider>/from-glider/
+                   ~/data/rt-data/<glider>/logs/
+
+  REALTIME=0   a laptop.  Recovered full-resolution dbd/ebd, data inside the
+               repo:
+                   <repo>/data/<glider>-from-glider/
+                   <repo>/data/<glider>-logs/
+
+REALTIME therefore picks two things at once: which binaries to read, and
+where to look for them. That is convenient but they are separate questions,
+so either can be overridden without touching this file:
+
+    GLIDER_DATA_ROOT=/home/scientist/data/archived   # where the data lives
+    DATA_LAYOUT=vm|local                             # how it is named there
+
+e.g. recovered data sitting on the VM in the archive:
+    REALTIME=0 DATA_LAYOUT=vm GLIDER_DATA_ROOT=~/data/archived python 01_...
+
+OUTPUTS ALWAYS STAY IN THE REPO, in both modes - only the INPUT location
+moves. Bathymetry is reference data, not stream data, so it also always
+lives in <repo>/data/.
+
 Per glider you need two hand-made inputs in the repo root:
     deployment_<glider>.yml     (you write it)
     sensor_list_<glider>.txt    (00_build_sensor_list.py writes it)
-
-Outputs go in one subfolder per glider, so several gliders can be processed
-side by side without overwriting each other.
 
     python config.py        # print what is configured and what has been done
 '''
@@ -25,77 +51,127 @@ import os
 GLIDER = os.environ.get('GLIDER', 'selkie')
                            # must match metadata:glider_name in the yml
 
-# True  -> realtime files:     sbd (flight) / tbd (science)
-# False -> recovered full-res: dbd (flight) / ebd (science)
+# True  -> VM   : realtime sbd (flight) / tbd (science)
+# False -> local: recovered full-res dbd (flight) / ebd (science)
 # Override with  REALTIME=0 python ...
 REALTIME = os.environ.get('REALTIME', '1').lower() not in ('0', 'false', 'no')
 
+# Where the VM keeps the incoming stream. Only used when the layout is 'vm'.
+VM_DATA_ROOT = '~/data/rt-data'
+
 
 #%% ============================================================
-#   paths (usually leave alone)
-#   ------------------------------------------------------------
-#   MIGRATION from the old layout:
-#     - outputs live one level deeper, in <folder>/<glider>/
-#     - sensor_list.txt is now sensor_list_<glider>.txt
-#     - rawnc/<glider>/ is split into segments/ and merged/
-#     - bathymetry moved into data/bathymetry_xyz/ and data/bathymetry_image/
-#   Easiest migration: config.clear_outputs(rawnc=True) once per glider,
-#   then rerun 01. It reconverts, but from then on it is incremental.
+#   paths
 #   ============================================================
 from pathlib import Path
 import numpy as np
 
-ROOT        = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent
 
-# shared across gliders
-DATA          = DATA_DIR = ROOT / 'data'     # one subfolder per download
-BATHY_XYZ_DIR = DATA / 'bathymetry_xyz'      # ASCII "lon lat depth" grids,
-                                             # for the 3D terrain
-BATHY_IMG_DIR = DATA / 'bathymetry_image'    # georeferenced image for the map
-                                             # tab, plus a .bounds sidecar
-DATA_GLIDER   = DATA / f'{GLIDER}-from-glider'
-                                             # THE inbox. One folder per
-                                             # glider, no timestamp: new
-                                             # downloads just land here and
-                                             # the pipeline converts whatever
-                                             # is not already in
-                                             # rawnc/<glider>/segments/.
-GLIDER_LOGS   = DATA / f'{GLIDER}-logs'      # surface dialogs FROM the
-                                             # glider. Raw input, so it sits
-                                             # in data/ next to the binaries.
-                                             # NOT the repo-root logs/, which
-                                             # is this pipeline's own log.
+# ---- input location: this is the part that differs per deployment -------
+LAYOUT = os.environ.get('DATA_LAYOUT', 'vm' if REALTIME else 'local').lower()
+if LAYOUT not in ('vm', 'local'):
+    raise SystemExit(f'DATA_LAYOUT must be "vm" or "local", got {LAYOUT!r}')
 
-# per-glider inputs (hand-made / written by 00)
-DEPLOYMENT  = ROOT / f'deployment_{GLIDER}.yml'
-SENSORLIST  = ROOT / f'sensor_list_{GLIDER}.txt'
+DATA = DATA_DIR = ROOT / 'data'      # repo data: bathymetry, and the glider
+                                     # folders too when LAYOUT == 'local'
 
-# per-glider outputs
-CACHE       = ROOT / 'cache' / GLIDER        # dbdreader cache; per glider so
+_root_env = os.environ.get('GLIDER_DATA_ROOT')
+DATA_ROOT = (Path(_root_env).expanduser().resolve() if _root_env
+             else (Path(VM_DATA_ROOT).expanduser() if LAYOUT == 'vm'
+                   else DATA))
+
+
+def glider_inbox(glider=None):
+    '''The one folder this glider's binaries arrive in.
+        vm    -> <DATA_ROOT>/<glider>/from-glider
+        local -> <DATA_ROOT>/<glider>-from-glider
+    '''
+    g = glider or GLIDER
+    return (DATA_ROOT / g / 'from-glider' if LAYOUT == 'vm'
+            else DATA_ROOT / f'{g}-from-glider')
+
+
+def glider_logs_dir(glider=None):
+    '''Surface dialogs FROM the glider - raw input, so it sits next to the
+    binaries. NOT the repo-root logs/, which is this pipeline's own log.
+        vm    -> <DATA_ROOT>/<glider>/logs
+        local -> <DATA_ROOT>/<glider>-logs
+    '''
+    g = glider or GLIDER
+    return (DATA_ROOT / g / 'logs' if LAYOUT == 'vm'
+            else DATA_ROOT / f'{g}-logs')
+
+
+DATA_GLIDER = glider_inbox()         # binaries in
+GLIDER_LOGS = glider_logs_dir()      # surface dialogs in
+
+# shared reference data, always in the repo - it is not streamed
+BATHY_XYZ_DIR = DATA / 'bathymetry_xyz'      # ASCII "lon lat depth" grids
+BATHY_IMG_DIR = DATA / 'bathymetry_image'    # map image + a .bounds sidecar
+
+# ---- per-glider inputs (hand-made / written by 00) ----------------------
+DEPLOYMENT = ROOT / f'deployment_{GLIDER}.yml'
+SENSORLIST = ROOT / f'sensor_list_{GLIDER}.txt'
+
+# ---- per-glider outputs: always in the repo, both modes -----------------
+CACHE        = ROOT / 'cache' / GLIDER       # dbdreader cache; per glider so
                                              # parallel runs cannot race
-RAWNC       = ROOT / 'rawnc' / GLIDER        # parent of the two below
-RAWNC_SEG   = RAWNC / 'segments'             # ARCHIVE: one .nc per binary
+RAWNC        = ROOT / 'rawnc' / GLIDER
+RAWNC_SEG    = RAWNC / 'segments'            # ARCHIVE: one .nc per binary
                                              # segment. Only 01 writes here,
                                              # and only ever adds.
-RAWNC_WORK  = RAWNC / '_mergework'           # disposable copy the merge is
+RAWNC_WORK   = RAWNC / '_mergework'          # disposable copy the merge is
                                              # allowed to consume
-RAWNC_MERGED = RAWNC / 'merged'              # merged flight + science
-L0_TS       = ROOT / 'L0-timeseries' / GLIDER
-L0_PROFILES = ROOT / 'L0-profiles' / GLIDER
-L0_GRID     = ROOT / 'L0-gridfiles' / GLIDER
-L0_LOGS     = ROOT / 'L0-logs' / GLIDER      # parsed surface dialogs (03)
-PLOTS       = ROOT / 'plots' / GLIDER
-HTML        = ROOT / 'interactive' / GLIDER
-STATE       = ROOT / '.state' / GLIDER       # stage fingerprints,
-                                             # segments.csv, and the derived
-                                             # *_used files
-for _d in (DATA, BATHY_XYZ_DIR, BATHY_IMG_DIR, DATA_GLIDER, GLIDER_LOGS,
-           CACHE, RAWNC_SEG, RAWNC_MERGED, L0_TS, L0_PROFILES, L0_GRID,
-           L0_LOGS, PLOTS, HTML, STATE):
+RAWNC_MERGED = RAWNC / 'merged'
+L0_TS        = ROOT / 'L0-timeseries' / GLIDER
+L0_PROFILES  = ROOT / 'L0-profiles' / GLIDER
+L0_GRID      = ROOT / 'L0-gridfiles' / GLIDER
+L0_LOGS      = ROOT / 'L0-logs' / GLIDER     # parsed surface dialogs (03)
+PLOTS        = ROOT / 'plots' / GLIDER
+HTML         = ROOT / 'interactive' / GLIDER
+STATE        = ROOT / '.state' / GLIDER      # stage fingerprints,
+                                             # segments.csv, *_used files
+
+for _d in (DATA, BATHY_XYZ_DIR, BATHY_IMG_DIR, CACHE, RAWNC_SEG,
+           RAWNC_MERGED, L0_TS, L0_PROFILES, L0_GRID, L0_LOGS, PLOTS, HTML,
+           STATE):
     _d.mkdir(parents=True, exist_ok=True)
+
+# Input folders are only created when we own them. On the VM they belong to
+# the ingestion service, and silently creating an empty ~/data/rt-data tree
+# on a laptop that set REALTIME=1 by accident would hide the real problem.
+if LAYOUT == 'local':
+    for _d in (DATA_GLIDER, GLIDER_LOGS):
+        _d.mkdir(parents=True, exist_ok=True)
+elif not DATA_ROOT.exists():
+    print(f'WARNING: DATA_LAYOUT=vm but {DATA_ROOT} does not exist.\n'
+          f'         Set GLIDER_DATA_ROOT, or REALTIME=0 for the local '
+          f'layout.')
 
 SCISUFFIX    = 'tbd' if REALTIME else 'ebd'
 GLIDERSUFFIX = 'sbd' if REALTIME else 'dbd'
+
+
+def where(verbose=True):
+    '''One-line summary of which deployment we think we are in.'''
+    lines = [
+        f'glider     : {GLIDER}',
+        f'mode       : {"realtime" if REALTIME else "recovered"} '
+        f'({GLIDERSUFFIX}/{SCISUFFIX})',
+        f'layout     : {LAYOUT}'
+        + ('   (from DATA_LAYOUT)' if 'DATA_LAYOUT' in os.environ else ''),
+        f'data root  : {DATA_ROOT}'
+        + ('   (from GLIDER_DATA_ROOT)' if _root_env else ''),
+        f'  binaries : {DATA_GLIDER}'
+        + ('' if DATA_GLIDER.exists() else '   <-- MISSING'),
+        f'  dialogs  : {GLIDER_LOGS}'
+        + ('' if GLIDER_LOGS.exists() else '   <-- MISSING'),
+        f'outputs    : {ROOT}',
+    ]
+    if verbose:
+        print('\n'.join(lines))
+    return lines
 
 
 #%% ============================================================
@@ -107,6 +183,10 @@ GLIDERSUFFIX = 'sbd' if REALTIME else 'dbd'
 #   ============================================================
 XYZ_SUFFIXES = ('.xyz', '.txt', '.asc', '.dat')
 IMG_SUFFIXES = ('.png', '.jpg', '.jpeg', '.webp')
+LOG_SUFFIXES = ('.log', '.txt', '.dat', '.dlg', '.nlg', '')
+                        # '' matches extensionless files on purpose -
+                        # dockserver surface dialogs are saved under every
+                        # naming scheme there is.
 
 
 def find_bathy_xyz(verbose=True):
@@ -127,31 +207,27 @@ def find_bathy_xyz(verbose=True):
               f'using {hits[0].name}')
     return hits[0]
 
-LOG_SUFFIXES = ('.log', '.txt', '.dat', '.dlg', '')
-                        # '' matches extensionless files on purpose -
-                        # dockserver surface dialogs are saved under every
-                        # naming scheme there is.
- 
- 
+
 def find_glider_logs(glider=None, verbose=True):
-    '''Every surface-dialog file in data/<glider>-logs/, oldest name first.
- 
+    '''Every surface-dialog file for this glider, oldest name first.
+
     No filtering on the glider name: the folder is already per glider, and
     the dialogs are usually named by date or segment rather than by vehicle.
-    03_parse_logs.py drops any record whose "Vehicle Name:" turns out to
-    belong to someone else, so a stray file cannot contaminate the output.
+    03 drops any record whose "Vehicle Name:" turns out to belong to someone
+    else, so a stray file cannot contaminate the output.
     '''
-    d = DATA / f'{glider or GLIDER}-logs'
+    d = glider_logs_dir(glider)
     if not d.exists():
         if verbose:
-            print(f'   no {d.name}/ - nothing to parse')
+            print(f'   no {d} - nothing to parse')
         return []
     hits = sorted(p for p in d.rglob('*')
                   if p.is_file() and not p.name.startswith('.')
                   and p.suffix.lower() in LOG_SUFFIXES)
     if verbose:
-        print(f'   {len(hits)} log files in {d.relative_to(ROOT)}/')
+        print(f'   {len(hits)} log files in {d}')
     return hits
+
 
 def read_bounds(path):
     '''Geographic bounds for a map image, from a sidecar next to it.
@@ -230,29 +306,23 @@ def binaries_in(folder, ext):
 
 def _matches_glider(path, glider=None):
     '''True if a file or folder name contains the glider name (case
-    insensitive). Slocum binaries are normally
-    <glider>-<year>-<yday>-<mission>-<segment>.sbd and download folders
-    usually carry the glider name too.
-    GUESSING!! - if your folders are named by date or mission only, nothing
-    will match; see the note at the bottom of this file.'''
+    insensitive).'''
     return (glider or GLIDER).lower() in path.name.lower()
-
-
-def glider_inbox(glider=None):
-    '''data/<glider>-from-glider - the one folder binaries go in.'''
-    return DATA / f'{glider or GLIDER}-from-glider'
 
 
 def legacy_data_dirs(glider=None, verbose=True):
     '''Old timestamped download folders that still hold binaries.
 
-    They are still processed, so nothing is lost while you migrate - but
-    they are reported with the exact mv command, because one growing inbox
-    is the whole point and half-migrated data is easy to forget about.
+    Local layout only - on the VM the ingestion service owns the tree and
+    there is exactly one from-glider folder per glider. They are still
+    processed so nothing is lost mid-migration, but reported with the exact
+    mv command, because one growing inbox is the whole point.
     '''
+    if LAYOUT != 'local':
+        return []
     glider = glider or GLIDER
     inbox = glider_inbox(glider)
-    hits = sorted(d for d in DATA.iterdir()
+    hits = sorted(d for d in DATA_ROOT.iterdir()
                   if d.is_dir() and d.resolve() != inbox.resolve()
                   and not d.name.lower().endswith('-logs')
                   and _matches_glider(d, glider)
@@ -270,23 +340,28 @@ def all_data_dirs(glider=None, verbose=True, strict=True):
     '''Folders holding binaries for `glider`, INBOX LAST.
 
     Ordering matters: callers that want a representative sample of the
-    newest data use the last entry, and the inbox is where new downloads
-    arrive. Conversion is incremental against rawnc/<glider>/segments/, so
+    newest data use the last entry, and the inbox is where new files arrive.
+    Conversion is incremental against rawnc/<glider>/segments/, so
     re-listing the whole inbox every run costs nothing.
     '''
     glider = glider or GLIDER
     inbox = glider_inbox(glider)
-    inbox.mkdir(parents=True, exist_ok=True)
+    if LAYOUT == 'local':
+        inbox.mkdir(parents=True, exist_ok=True)
 
     dirs = legacy_data_dirs(glider, verbose=verbose)
-    n_inbox = len(binaries_in(inbox, GLIDERSUFFIX))
+    n_inbox = len(binaries_in(inbox, GLIDERSUFFIX)) if inbox.exists() else 0
     if n_inbox:
         dirs = dirs + [inbox]
 
     if not dirs:
         msg = (f'no *.{GLIDERSUFFIX} files for "{glider}".\n'
-               f'Put them in:  {inbox}\n'
-               f'(one folder, no timestamp - new downloads just add to it)')
+               f'Looked in : {inbox}\n'
+               f'layout    : {LAYOUT}   data root: {DATA_ROOT}\n'
+               + ('That folder does not exist. Wrong machine? The VM layout '
+                  'is REALTIME=1, the laptop layout REALTIME=0.\n'
+                  if not inbox.exists() else '')
+               + 'Override with GLIDER_DATA_ROOT / DATA_LAYOUT if needed.')
         if strict:
             raise FileNotFoundError(msg)
         print(f'WARNING: {msg}')
@@ -297,7 +372,7 @@ def all_data_dirs(glider=None, verbose=True, strict=True):
         done = len(list(RAWNC_SEG.glob('*.nc')))
         print(f'DATA [{glider}]: {n} *.{GLIDERSUFFIX} across {len(dirs)} '
               f'folder(s); {done} segments already converted')
-        print(f'  inbox: {inbox.name}  ({n_inbox} files)'
+        print(f'  inbox [{LAYOUT}]: {inbox}  ({n_inbox} files)'
               + ('   <-- EMPTY' if not n_inbox else ''))
     return dirs
 
@@ -307,6 +382,7 @@ def latest_data_dir(glider=None, verbose=True, strict=True):
     00_build_sensor_list.py uses this - it only needs a sample.'''
     d = all_data_dirs(glider, verbose=verbose, strict=strict)
     return d[-1] if d else None
+
 
 def newest_nc(folder, must_contain=None, strict=True):
     '''Newest .nc in `folder` belonging to `must_contain` (defaults to
@@ -561,19 +637,11 @@ def segment_time_range(first=None, last=None, verbose=True):
 #   run this file directly to check the setup
 #   ============================================================
 if __name__ == '__main__':
-    print(f'GLIDER   : {GLIDER}')
-    print(f'MODE     : {"realtime" if REALTIME else "recovered (full res)"} '
-          f'({GLIDERSUFFIX}/{SCISUFFIX})')
-    print(f'ROOT     : {ROOT}')
-    print(f'yml      : {DEPLOYMENT.name}'
+    where()
+    print(f'yml        : {DEPLOYMENT.name}'
           f'{"" if DEPLOYMENT.exists() else "   <-- MISSING"}')
-    print(f'sensors  : {SENSORLIST.name}'
+    print(f'sensors    : {SENSORLIST.name}'
           f'{"" if SENSORLIST.exists() else "   <-- MISSING, run 00"}')
-
-    _legacy = ROOT / 'sensor_list.txt'
-    if _legacy.exists() and not SENSORLIST.exists():
-        print(f'           (found the old shared {_legacy.name} - rename it '
-              f'to {SENSORLIST.name}, or just rerun 00)')
 
     _known = sorted(p.stem.replace('deployment_', '')
                     for p in ROOT.glob('deployment_*.yml'))
@@ -590,26 +658,12 @@ if __name__ == '__main__':
           f'{f"  bounds {_b}" if _b else ""}')
 
     _logs = find_glider_logs(verbose=False)
-    print(f'\\nsurface dialogs: {len(_logs)} files in '
-          f'{GLIDER_LOGS.relative_to(ROOT)}/'
-          f'{"   <-- empty, Logs tab will be skipped" if not _logs else ""}')
+    print(f'\nsurface dialogs: {len(_logs)} files in {GLIDER_LOGS}'
+          f'{"   <-- empty, Logs/Battery tabs will be skipped" if not _logs else ""}')
 
-    all_data_dirs()
+    print()
+    all_data_dirs(strict=False)
     segment_table()
     status()
-
-
-# ============================================================
-# NOTE - if your download folders are NOT named after the glider
-# ------------------------------------------------------------
-# _matches_glider() only reads names. If a folder is "2026-07-18_download"
-# holding binaries called "01870000.sbd", nothing matches and strict mode
-# raises. Then either:
-#   - rename the folders to include the glider name (simplest), or
-#   - keep one data/<glider>/ subfolder per glider and set
-#     DATA = ROOT / 'data' / GLIDER, or
-#   - read the glider name from the binary header instead of the filename
-#     (dbdreader, or the ascii header field the8x3_filename).
-# ============================================================
 
 # %%
