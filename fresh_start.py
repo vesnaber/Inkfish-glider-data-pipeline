@@ -92,6 +92,21 @@ hdr('3. gliders')
 ymls = sorted(ROOT.glob('deployment_*.yml'))
 gliders = [p.stem.replace('deployment_', '') for p in ymls]
 
+# config decides where the data lives (vm vs local layout, GLIDER_DATA_ROOT,
+# deployment_start), and it reads the environment at import time - so ask it
+# once per glider in its own process instead of guessing paths here.
+PROBE = '''
+import json, config
+print("@@" + json.dumps(dict(
+    layout=config.LAYOUT, realtime=config.REALTIME,
+    data_root=str(config.DATA_ROOT),
+    inbox=str(config.glider_inbox()), logs=str(config.glider_logs_dir()),
+    flight=config.GLIDERSUFFIX, sci=config.SCISUFFIX,
+    start=str(config.deployment_start()),
+    filt=config.FILE_FILTER, cache=str(config.CACHE))))
+'''
+
+info = {}
 if not gliders:
     ok = False
     print('  NO deployment_<glider>.yml found.')
@@ -102,13 +117,20 @@ else:
     print(f'  found: {", ".join(gliders)}')
     for g in gliders:
         env = {**os.environ, 'GLIDER': g}
-        r = subprocess.run([sys.executable, '-c', 'import config'],
+        r = subprocess.run([sys.executable, '-c', PROBE],
                            env=env, capture_output=True, text=True)
         if r.returncode:
             ok = False
             print(f'  {g}: config.py FAILED\n{r.stdout}{r.stderr}')
-        else:
-            print(f'  {g}: folders ready ({PER_GLIDER_NOTE})')
+            continue
+        import json
+        line = next((l for l in r.stdout.splitlines()
+                     if l.startswith('@@')), None)
+        info[g] = json.loads(line[2:]) if line else {}
+        i = info[g]
+        print(f'  {g}: layout {i["layout"]} '
+              f'({"realtime " + i["flight"] + "/" + i["sci"] if i["realtime"] else "recovered " + i["flight"] + "/" + i["sci"]})'
+              f', folders ready ({PER_GLIDER_NOTE})')
 
 
 #%% ============================================================
@@ -117,6 +139,7 @@ else:
 hdr('4. per-glider inputs')
 for g in gliders:
     print(f'  [{g}]')
+    i = info.get(g, {})
 
     yml = ROOT / f'deployment_{g}.yml'
     try:
@@ -131,6 +154,18 @@ for g in gliders:
         ok = False
         print(f'    BROKEN   {yml.name}: {e}')
 
+    start = i.get('start', 'None')
+    if start in ('None', '', None):
+        ok = False
+        print(f'    MISSING  deployment_start: in {yml.name} - without it '
+              f'every old mission\n'
+              f'             still in the folder is processed. Add it under '
+              f'metadata:')
+    else:
+        print(f'    ok       deployment_start {start[:16]}'
+              + ('' if i.get('filt', True)
+                 else '   (GLIDER_FILE_FILTER=0: filter OFF)'))
+
     sl = ROOT / f'sensor_list_{g}.txt'
     if sl.exists():
         n = len([x for x in sl.read_text().split() if x])
@@ -139,43 +174,81 @@ for g in gliders:
         print(f'    todo     {sl.name} - run:  '
               f'GLIDER={g} python 00_build_sensor_list.py')
 
-    inbox = ROOT / 'data' / f'{g}-from-glider'
-    inbox.mkdir(parents=True, exist_ok=True)
+    # the inbox is wherever config says it is: inside the repo on a laptop,
+    # out under ~/data/rt-data on the VM. Guessing a repo path here is what
+    # made this section lie about the VM.
+    inbox = Path(i['inbox']) if i.get('inbox') else ROOT / 'data' / f'{g}-from-glider'
+    flight, sci = i.get('flight', 'sbd'), i.get('sci', 'tbd')
 
-    def _bins(d):
-        return (len(list(d.glob('*.[st]bd'))) + len(list(d.glob('*.[de]bd'))))
+    def _count(d, ext):
+        if not d.exists():
+            return 0
+        return len({p.resolve() for pat in (f'*.{ext}', f'*.{ext.upper()}')
+                    for p in d.glob(pat)})
 
-    n_inbox = _bins(inbox)
-    legacy = [d for d in (ROOT / 'data').iterdir()
-              if d.is_dir() and d != inbox and _bins(d)
-              and g.lower() in d.name.lower()
-              and not d.name.lower().endswith('-logs')]
-
-    if n_inbox:
-        print(f'    ok       data/{g}-from-glider/  ({n_inbox} binaries)')
-    else:
+    n_fl, n_sc = _count(inbox, flight), _count(inbox, sci)
+    if not inbox.exists():
         ok = False
-        print(f'    EMPTY    data/{g}-from-glider/  - binaries go here.')
-        print(f'             One folder, no timestamp. New downloads just')
-        print(f'             add to it; already-converted files are skipped.')
-    if legacy:
-        n = sum(_bins(d) for d in legacy)
-        print(f'    legacy   {len(legacy)} timestamped folder(s), {n} '
-              f'binaries - still processed, but move them in:')
-        for d in legacy:
-            print(f'               mv data/{d.name}/* data/{g}-from-glider/')
- 
-    lg = ROOT / 'data' / f'{g}-logs'
-    lg.mkdir(parents=True, exist_ok=True)
-    logs = [p for p in lg.rglob('*')
-            if p.is_file() and not p.name.startswith('.')]
+        print(f'    MISSING  {inbox}  - the inbox does not exist')
+        if i.get('layout') == 'vm':
+            print(f'             layout is "vm", so this folder belongs to '
+                  f'the ingestion service.\n'
+                  f'             Wrong machine? The laptop layout is '
+                  f'REALTIME=0.')
+    elif not (n_fl or n_sc):
+        ok = False
+        print(f'    EMPTY    {inbox}  - binaries go here')
+    else:
+        print(f'    ok       {inbox}')
+        print(f'             {n_fl} *.{flight} (flight), '
+              f'{n_sc} *.{sci} (science)')
+        if not n_sc:
+            ok = False
+            print(f'             !! no science files - the merge cannot '
+                  f'produce anything.\n'
+                  f'                GLIDER={g} python diagnose_binaries.py')
+
+    # accepted after the name + deployment_start filter
+    if n_fl or n_sc:
+        env = {**os.environ, 'GLIDER': g}
+        code = ('import config;'
+                f'print("@@", len(config.binaries_in(config.glider_inbox(),'
+                f' config.GLIDERSUFFIX)),'
+                f' len(config.binaries_in(config.glider_inbox(),'
+                f' config.SCISUFFIX)))')
+        r = subprocess.run([sys.executable, '-c', code], env=env,
+                           capture_output=True, text=True)
+        line = next((l for l in r.stdout.splitlines()
+                     if l.startswith('@@')), None)
+        if line:
+            a_fl, a_sc = (int(x) for x in line.split()[1:3])
+            print(f'    ok       accepted by the filter: {a_fl} {flight}, '
+                  f'{a_sc} {sci}'
+                  + ('   <-- everything filtered out!'
+                     if not (a_fl or a_sc) else ''))
+            if not (a_fl or a_sc):
+                ok = False
+
+    lg = Path(i['logs']) if i.get('logs') else ROOT / 'data' / f'{g}-logs'
+    logs = ([p for p in lg.rglob('*')
+             if p.is_file() and not p.name.startswith('.')]
+            if lg.exists() else [])
     if logs:
         mb = sum(p.stat().st_size for p in logs) / 1e6
-        print(f'    ok       data/{g}-logs/  ({len(logs)} files, {mb:.1f} MB)')
+        print(f'    ok       {lg}  ({len(logs)} files, {mb:.1f} MB)')
     else:
-        print(f'    empty    data/{g}-logs/  - put the surface dialogs here.')
-        print(f'             Optional: without them 03_parse_logs.py has')
-        print(f'             nothing to do and the Logs tab is skipped.')
+        print(f'    empty    {lg}  - surface dialogs go here (optional; '
+              f'without them the Logs/Battery tabs are skipped)')
+
+    cache = Path(i['cache']) if i.get('cache') else ROOT / 'cache' / g
+    n_cac = len(list(cache.glob('*.cac'))) + len(list(cache.glob('*.CAC')))
+    print(f'    {"ok      " if n_cac else "empty   "} {cache}  '
+          f'({n_cac} *.cac)')
+    if not n_cac:
+        print(f'             realtime {sci}/{flight} files need the '
+              f'dockserver cache to be readable.\n'
+              f'             GLIDER={g} python diagnose_binaries.py  '
+              f'finds and copies them.')
 
 
 #%% ============================================================
