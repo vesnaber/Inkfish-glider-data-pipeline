@@ -249,6 +249,30 @@ if run:
     n_copy = len(list(config.RAWNC_WORK.glob('*.nc')))
     print(f'  working on a copy of {n_copy} segments')
 
+    # Realtime segments with no samples convert to nc files with a
+    # zero-length dimension, and open_mfdataset inside merge_rawnc refuses
+    # to combine those ("Cannot handle size zero dimensions"). Drop them
+    # from the COPY only - the archive keeps them, so if a later download
+    # ever fills such a segment, incremental conversion overwrites it there.
+    n_empty = 0
+    for f in sorted(config.RAWNC_WORK.glob('*.nc')):
+        try:
+            with xr.open_dataset(f, decode_times=False) as d:
+                empty = (not d.sizes) or min(d.sizes.values()) == 0
+        except Exception as e:
+            print(f'  unreadable, dropping from the merge: {f.name} ({e})')
+            empty = True
+        if empty:
+            f.unlink()
+            n_empty += 1
+    if n_empty:
+        print(f'  dropped {n_empty} empty segment file(s) from the merge '
+              f'copy ({n_copy - n_empty} left; archive untouched)')
+    if n_copy - n_empty == 0:
+        raise SystemExit('every segment file is empty - nothing to merge. '
+                         'The glider has not transmitted any samples yet '
+                         'for the accepted files.')
+
     for f in config.RAWNC_MERGED.glob('*.nc'):     # no stale merged files
         f.unlink()
 
