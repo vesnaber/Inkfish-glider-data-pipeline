@@ -54,7 +54,7 @@ GLIDER = os.environ.get('GLIDER', 'selkie')
 # True  -> VM   : realtime sbd (flight) / tbd (science)
 # False -> local: recovered full-res dbd (flight) / ebd (science)
 # Override with  REALTIME=0 python ...
-REALTIME = os.environ.get('REALTIME', '0').lower() not in ('0', 'false', 'no')
+REALTIME = os.environ.get('REALTIME', '1').lower() not in ('0', 'false', 'no')
 
 # Where the VM keeps the incoming stream. Only used when the layout is 'vm'.
 VM_DATA_ROOT = '~/data/rt-data'
@@ -149,8 +149,8 @@ elif not DATA_ROOT.exists():
           f'         Set GLIDER_DATA_ROOT, or REALTIME=0 for the local '
           f'layout.')
 
-SCISUFFIX    = 'tbd' if REALTIME else 'tbd'
-GLIDERSUFFIX = 'sbd' if REALTIME else 'sbd'
+SCISUFFIX    = 'tbd' if REALTIME else 'ebd'
+GLIDERSUFFIX = 'sbd' if REALTIME else 'dbd'
 
 
 def where(verbose=True):
@@ -440,12 +440,21 @@ def stage_inputs(folder, glider=None, verbose=True):
                 shutil.copy2(f, link)
             n += 1
     n_cac = 0
-    for pat in ('*.cac', '*.CAC'):
-        for c in folder.glob(pat):
-            tgt = CACHE / c.name.lower()
-            if not tgt.exists():
-                shutil.copy2(c, tgt)
-                n_cac += 1
+    # cache files travel under several conventions: next to the binaries, in
+    # a cache/ sibling, or one level up. Copy any we can find - a missing
+    # SCIENCE cache is exactly what makes every .tbd fail to convert while
+    # the .sbd sail through.
+    cand_dirs = [folder, folder / 'cache', folder.parent,
+                 folder.parent / 'cache', DATA_ROOT / 'cache']
+    for cd in cand_dirs:
+        if not cd.is_dir():
+            continue
+        for pat in ('*.cac', '*.CAC'):
+            for c in cd.glob(pat):
+                tgt = CACHE / c.name.lower()
+                if not tgt.exists():
+                    shutil.copy2(c, tgt)
+                    n_cac += 1
     if verbose:
         print(f'      staged {n} accepted binaries'
               + (f' + {n_cac} new cache files' if n_cac else ''))

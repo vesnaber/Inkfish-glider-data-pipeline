@@ -240,6 +240,24 @@ for i, d in enumerate(data_dirs, 1):
 after = config.dir_signature(config.RAWNC_SEG)
 print(f'  segments: {before["n"]} -> {after["n"]} '
       f'({after["n"] - before["n"]} new)')
+n_fl = len(list(config.RAWNC_SEG.glob(f'*.{config.GLIDERSUFFIX}.nc')))
+n_sc = len(list(config.RAWNC_SEG.glob(f'*.{config.SCISUFFIX}.nc')))
+print(f'  by type : {n_fl} flight (*.{config.GLIDERSUFFIX}.nc), '
+      f'{n_sc} science (*.{config.SCISUFFIX}.nc)')
+if n_fl == 0 or n_sc == 0:
+    dead = config.SCISUFFIX if n_sc == 0 else config.GLIDERSUFFIX
+    raise SystemExit(
+        f'\nNOT ONE *.{dead} converted to a segment file, so the merge would '
+        f'die with "no files to open".\n'
+        f'Scroll up: pyglider will have printed "Some files could not be '
+        f'processed" followed by\nevery failing file. The usual cause is a '
+        f'missing sensor-list CACHE for that file type\n'
+        f'(each type has its own .cac). Find it and drop it in '
+        f'{config.CACHE}:\n'
+        f'    find ~/data -iname "*.cac"\n'
+        f'stage_inputs already copies any .cac it finds next to / near the '
+        f'binaries, so if the\nfind above locates them elsewhere, copy them '
+        f'in by hand once.')
 print(f'  signature: {after["hash"]}  '
       f'({"UNCHANGED" if after == before else "changed"})')
 config.write_state('rawnc', K_RAW, **after)
