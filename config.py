@@ -78,10 +78,28 @@ GLIDER = os.environ.get('GLIDER', 'selkie')
 # one of the two places auto-detect looks for data.
 VM_DATA_ROOT = '~/data/rt-data'
 
-# Pin these only to force a choice; None = auto-detect (recommended).
-# Environment variables (REALTIME / DATA_LAYOUT) still override either.
-MANUAL_REALTIME = True      # None | False (recovered dbd/ebd) | True (realtime sbd/tbd)
-MANUAL_LAYOUT = None        # None | 'local' | 'vm'
+# ============================================================
+#   THE TWO KNOBS  (this is what you set)
+#   ------------------------------------------------------------
+#   MACHINE  = where the data folders live (the layout)
+#   DATATYPE = which binaries you have (which suffixes to read)
+#   They are independent - e.g. realtime data in a local folder,
+#   which is the normal case before the glider is recovered.
+#
+#   'auto' figures it out from the data on disk. Environment
+#   variables (DATA_LAYOUT / REALTIME) still override, so
+#   run_gliders.py and the VM keep working untouched.
+# ============================================================
+MACHINE  = 'auto'      # 'local' | 'vm'       | 'auto'
+DATATYPE = 'realtime'      # 'realtime' | 'recovered' | 'auto'
+
+_MACHINE = str(MACHINE).strip().lower()
+_DATATYPE = str(DATATYPE).strip().lower()
+if _MACHINE not in ('local', 'vm', 'auto'):
+    raise SystemExit(f"MACHINE must be 'local', 'vm' or 'auto', got {MACHINE!r}")
+if _DATATYPE not in ('realtime', 'recovered', 'auto'):
+    raise SystemExit(f"DATATYPE must be 'realtime', 'recovered' or 'auto', "
+                     f"got {DATATYPE!r}")
 
 _HERE = Path(__file__).resolve().parent
 _LOCAL_INBOX = _HERE / 'data' / f'{GLIDER}-from-glider'
@@ -100,7 +118,7 @@ def _exts_in(folder):
     return found
 
 
-# WHERE is the data -> which layout, preferring the repo-local folder.
+# WHERE is the data -> used by MACHINE='auto' (prefer the repo-local folder).
 _local_exts = _exts_in(_LOCAL_INBOX)
 _vm_exts = _exts_in(_VM_INBOX)
 if _local_exts:
@@ -116,14 +134,17 @@ else:
     _AUTO_EXTS = set()
     _WHERE = None
 
-# WHAT TYPE is the data -> realtime vs recovered.
+# DATATYPE -> REALTIME.  env REALTIME > DATATYPE knob > auto from file type.
 if os.environ.get('REALTIME') is not None:
     REALTIME = (os.environ['REALTIME'].strip().lower()
                 not in ('0', 'false', 'no', 'off', ''))
     _REALTIME_SRC = 'REALTIME env'
-elif MANUAL_REALTIME is not None:
-    REALTIME = bool(MANUAL_REALTIME)
-    _REALTIME_SRC = 'MANUAL_REALTIME pinned in config.py'
+elif _DATATYPE == 'realtime':
+    REALTIME = True
+    _REALTIME_SRC = "DATATYPE='realtime' in config.py"
+elif _DATATYPE == 'recovered':
+    REALTIME = False
+    _REALTIME_SRC = "DATATYPE='recovered' in config.py"
 elif _AUTO_EXTS & {'dbd', 'ebd'}:
     REALTIME = False
     _REALTIME_SRC = f'auto (recovered dbd/ebd in {_WHERE})'
@@ -143,9 +164,18 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 
 # ---- input location: this is the part that differs per deployment -------
-LAYOUT = os.environ.get('DATA_LAYOUT',
-                        MANUAL_LAYOUT or _LAYOUT_AUTO
-                        or ('vm' if REALTIME else 'local')).lower()
+if os.environ.get('DATA_LAYOUT'):
+    LAYOUT = os.environ['DATA_LAYOUT'].strip().lower()
+    _LAYOUT_SRC = 'DATA_LAYOUT env'
+elif _MACHINE in ('local', 'vm'):
+    LAYOUT = _MACHINE
+    _LAYOUT_SRC = f"MACHINE='{_MACHINE}' in config.py"
+elif _LAYOUT_AUTO:
+    LAYOUT = _LAYOUT_AUTO
+    _LAYOUT_SRC = f'auto (data in {_WHERE})'
+else:
+    LAYOUT = 'vm' if REALTIME else 'local'
+    _LAYOUT_SRC = 'auto (no data found -> default)'
 if LAYOUT not in ('vm', 'local'):
     raise SystemExit(f'DATA_LAYOUT must be "vm" or "local", got {LAYOUT!r}')
 
@@ -235,8 +265,7 @@ def where(verbose=True):
         f'glider     : {GLIDER}',
         f'mode       : {"realtime" if REALTIME else "recovered"} '
         f'({GLIDERSUFFIX}/{SCISUFFIX})   [{_REALTIME_SRC}]',
-        f'layout     : {LAYOUT}'
-        + ('   (from DATA_LAYOUT)' if 'DATA_LAYOUT' in os.environ else ''),
+        f'layout     : {LAYOUT}   [{_LAYOUT_SRC}]',
         f'data root  : {DATA_ROOT}'
         + ('   (from GLIDER_DATA_ROOT)' if _root_env else ''),
         f'  binaries : {DATA_GLIDER}'

@@ -8,22 +8,134 @@ subfolder per glider, and the glider is chosen per process with an
 environment variable, so nothing collides.
 
 ```
-config.py                     <- paths + glider selection (the one file you may edit)
+config.py                     <- the two knobs + all paths (the one file you may edit)
 fresh_start.py                <- run first: makes folders, checks the setup
 deployment_<glider>.yml       <- metadata + sensor -> variable mapping (you write this)
 sensor_list_<glider>.txt      <- written by 00, do not edit by hand
 run_gliders.py                <- runs every step for every glider
 
-data/<download folder>/       <- drop the dockserver folders here
 cache/<glider>/               \
 rawnc/<glider>/segments/       |  created automatically
 rawnc/<glider>/merged/         |  (all gitignored)
 L0-timeseries/<glider>/        |
 L0-profiles/<glider>/          |
 L0-gridfiles/<glider>/         |
+L0-logs/<glider>/              |
 plots/<glider>/                |
 interactive/<glider>/          |
 .state/<glider>/              /   <- what has already been processed
+```
+
+## The two knobs
+
+Two important switches in `config.py`:
+
+```python
+MACHINE  = 'auto'      # 'local' | 'vm'          | 'auto'
+DATATYPE = 'auto'      # 'realtime' | 'recovered' | 'auto'
+```
+
+| knob | what it decides | values |
+|---|---|---|
+| `MACHINE` | where the **data folders** are | `local` = `<repo>/data/<glider>-from-glider/`  •  `vm` = `~/data/rt-data/<glider>/from-glider/` |
+| `DATATYPE` | which **binaries** to read | `realtime` = `sbd`/`tbd`  •  `recovered` = `dbd`/`ebd` |
+
+`'auto'` works it out from the data on disk: location decides `MACHINE`,
+file extension decides `DATATYPE`.
+
+Environment variables override both, per axis, so `run_gliders.py` and the VM
+keep working no matter how the file is pinned:
+
+| env var | overrides | values |
+|---|---|---|
+| `GLIDER` | which glider | `selkie`, `unit_1272`, … |
+| `DATA_LAYOUT` | `MACHINE` | `local`, `vm` |
+| `REALTIME` | `DATATYPE` | `1` (realtime), `0` (recovered) |
+| `GLIDER_DATA_ROOT` | the data root | any path |
+
+**Outputs always stay in the repo**, in both layouts — only the *input*
+location moves.
+
+Check what actually resolved before a long run:
+
+```bash
+python config.py            # prints mode + layout, each with its reason
+```
+
+## Running from a terminal
+
+`run_gliders.py` runs the whole chain (00 → 01 → 03 → 03b → 04 → 05) for one
+or more gliders, one subprocess each, streaming output and writing
+`logs/<glider>_<timestamp>.log`.
+
+**1. Home (local) + realtime**
+
+```bash
+python run_gliders.py -r 1 --layout local
+```
+
+**2. Home (local) + recovered**
+
+```bash
+python run_gliders.py -r 0 --layout local
+```
+
+**3. VM + realtime** — the normal VM case, and the defaults
+
+```bash
+python run_gliders.py
+# explicit equivalent:
+python run_gliders.py -r 1 --layout vm
+```
+
+**4. VM + recovered**
+
+```bash
+python run_gliders.py -r 0 --layout vm --data-root ~/data/<recovered-folder>
+```
+
+`--layout vm` alone points at `~/data/rt-data`, which holds the *stream*.
+Recovered `dbd`/`ebd` live somewhere else, so pass `--data-root`.
+GUESSING!! at where recovered data gets staged on the VM — set it to
+whatever is true.
+
+**5. One script, or one glider, in any configuration**
+
+```bash
+python run_gliders.py -g selkie --only 01              # one glider, one step
+python run_gliders.py -g selkie unit_1272 --only 04 05 # two gliders, the html
+python run_gliders.py --skip 01                        # all but the slow one
+python run_gliders.py -j 1                             # sequential, readable log
+python run_gliders.py --list                           # preview, run nothing
+```
+
+`--only` / `--skip` match on any part of the filename, so `04`,
+`interactive` and `04_interactive_html.py` all work. Combine freely with
+`-r` / `--layout`.
+
+Or call a script directly — simplest when debugging, since the environment
+is right there in the command:
+
+```bash
+GLIDER=selkie REALTIME=0 DATA_LAYOUT=local python 01_process_to_nc.py
+```
+
+**6. Only the plots (02)**
+
+```bash
+GLIDER=selkie REALTIME=1 DATA_LAYOUT=local python 02_plots_full_timeseries.py
+```
+
+`02` is deliberately **not** in `run_gliders.py`'s `SCRIPTS` list, so
+`--only 02` fails with "matched nothing". Run it directly, or add it to that
+list.
+
+**Housekeeping, any configuration**
+
+```bash
+GLIDER=selkie python -c "import config; config.status()"           # what's done
+GLIDER=selkie python -c "import config; config.clear_outputs()"    # forget L0, keep the conversion
+GLIDER=selkie python -c "import config; config.clear_outputs(rawnc=True)"  # also redo the slow step
 ```
 
 ## Fresh start
@@ -33,101 +145,87 @@ After cloning:
 ```bash
 conda create -n gliderwork python=3.12
 conda activate gliderwork
-conda install -c conda-forge pyglider dbdreader cmocean gsw plotly  pyshp netcdf4 pyarrow
+conda install -c conda-forge pyglider dbdreader cmocean gsw plotly pyshp netcdf4 pyarrow
 
 python fresh_start.py
 ```
 
-`fresh_start.py` creates every folder, checks the packages, and prints a
-checklist of what is still missing. It changes nothing that already exists,
-so you can rerun it whenever something looks off.
+`fresh_start.py` asks `config` where things are, so it reports the *real*
+inbox for the machine it runs on. It prints flight vs science file counts
+separately, how many files survive the filter, and whether the sensor cache
+is present. It changes nothing that already exists.
 
-It will tell you to do these, in this order:
+It will tell you to do these, in order:
 
 1. **Write `deployment_<glider>.yml`.** Copy the example, rename it, set the
    `metadata:` block (`glider_name` must match the file name) and, under
    `netcdf_variables:`, each entry's `source:` = the Slocum sensor name.
    You do *not* have to remove sensors your glider lacks — `01` skips them
    with a warning.
-2. **Put the download folder in `data/`,** exactly as it comes off the
-   dockserver: `data/<glider>-from-glider-<timestamp>/`. The glider name in
-   the folder name is how the scripts tell your gliders apart. Add as many
-   folders as you have — `01` reads *all* of them.
-3. **Optional, for the map and 3D tabs:** `data/bathymetry_PE500.png`,
-   `data/cuw_adm0/CUW_adm0.shp`, `data/Pelagia_bathymetry/*.xyz`. Everything
-   still works without them, those tabs just get simpler.
-4. Rerun `python fresh_start.py` until it is happy.
-
-## Running
-
-Everything, every glider:
-
-```bash
-python run_gliders.py       # set GLIDERS at the top of the file first
-```
-
-Or one glider, one step at a time:
-
-```bash
-GLIDER=selkie python 00_build_sensor_list.py   # which sensors carry data
-GLIDER=selkie python 01_process_to_nc.py       # binaries -> netcdf
-GLIDER=selkie python 02_plots_full_timeseries.py
-GLIDER=selkie python 04_interactive_html.py    # the web page
-python 05_all_gliders.py                       # one landing page for all
-```
-
-`GLIDER` defaults to whatever is set in `config.py`, so on Windows or in an
-IDE you can just edit that line instead. Every script also runs cell-by-cell
-in VS Code / Jupyter (`#%%` markers).
+2. **Set `deployment_start:` under `metadata:`.** Everything before that
+   date is ignored (see below). Without it, old missions still sitting in
+   the folder get processed too.
+3. **Put the binaries in the inbox** — one folder, no timestamp:
+   `data/<glider>-from-glider/` locally, or
+   `~/data/rt-data/<glider>/from-glider/` on the VM. New downloads just add
+   to it; already-converted files are skipped.
+4. **Optional, for the map and 3D tabs:** an ASCII grid in
+   `data/bathymetry_xyz/` and an image plus a `.bounds` sidecar in
+   `data/bathymetry_image/`. Both tabs work without them, just plainer.
+5. Rerun `python fresh_start.py` until it is happy.
 
 | script | what it does |
 |---|---|
-| `00_build_sensor_list.py` | Looks inside the binaries, writes `sensor_list_<glider>.txt` with only the sensors that actually carry measurements. Reports what the yml asked for and could not find. Needed once per glider. |
-| `01_process_to_nc.py` | Binaries → netcdf. **Incremental** — see below. Quick look figure in `plots/<glider>/`. |
+| `00_build_sensor_list.py` | Looks inside the binaries, writes `sensor_list_<glider>.txt` with only the sensors that actually carry measurements. Needed once per glider. |
+| `01_process_to_nc.py` | Binaries → netcdf. **Incremental** — see below. |
 | `02_plots_full_timeseries.py` | Static figures for the whole deployment. The first cell holds everything worth changing. |
+| `03_process_glider_logs.py` | Parses the surface dialogs into `L0-logs/<glider>/`. |
+| `03b_battery_status.py` | Battery trend from the parsed logs. |
 | `04_interactive_html.py` | `interactive/<glider>/<glider>.html` — a normal file, no server. |
-| `05_all_gliders.py` | `interactive/all_gliders.html` — a button per glider, each page loaded on first click. |
-| `06_html_weight.py` | Diagnostic: where the megabytes in the html go. |
+| `05_interactive_html_merge_gliders.py` | `interactive/all_gliders.html` — a button per glider, each page loaded on first click. |
+| `diagnose_binaries.py` | Reads a binary's header, works out which `.cac` it needs, and says whether it is there. Use when a file type refuses to convert. |
+
+## Which files get picked up
+
+Only binaries named `<glider>-YYYY-DDD-M-S.<ext>` (or with `_` as separator)
+are converted, and only when the mission date in the name is on or after
+`deployment_start:` in the yml. Everything else — other gliders, 8.3 DOS
+names, older missions — is excluded and reported once per folder.
+
+pyglider converts *every* binary in the directory it is handed, so filtering
+the list is not enough: `01` symlinks the accepted files into
+`.state/<glider>/staged/` and points pyglider at that instead.
+
+If a dataset ever arrives with 8.3 names (straight off the glider flash):
+
+```bash
+GLIDER_FILE_FILTER=0 python 01_process_to_nc.py
+```
 
 ## Incremental processing
 
-`01` fingerprints each stage and skips work it has already done, so a rerun
-after a new download only costs the new segments.
+`01` fingerprints each stage in `.state/<glider>/` and skips work it has
+already done, so a rerun after a new download only costs the new segments.
 
 - **rawnc/segments/** is an archive: converted binaries are only ever added.
-  It is rebuilt only if the sensor list, the yml, or realtime/recovered mode
+  Rebuilt only if the sensor list, the yml, the mode, or `deployment_start`
   changed.
 - The merge runs on a throwaway copy, because pyglider's `merge_rawnc`
-  consumes its input directory.
-- timeseries, profiles and grid are single files, so they are rewritten —
-  but only when something upstream actually moved.
+  consumes its input directory. Empty segments are dropped from the copy —
+  the archive keeps them.
+- timeseries, profiles and grid are rewritten, but only when something
+  upstream actually moved. Each is deleted just before it is rewritten, so a
+  stale or still-open file cannot block the write.
 
 Each stage prints why it ran: `never run`, `settings or upstream changed`,
 `output missing`, or `up to date`. `TIMING = True` prints seconds per stage.
 
-To redo something:
+To redo something, in `01`:
 
 ```python
-FORCE = 'timeseries'   # in 01: that stage and everything after it
+FORCE = 'timeseries'   # that stage and everything after it
 FORCE = 'all'
 ```
-
-```bash
-# forget everything, keep the converted binaries
-GLIDER=selkie python -c "import config; config.clear_outputs()"
-# also throw away the binary conversion (slow to redo)
-GLIDER=selkie python -c "import config; config.clear_outputs(rawnc=True)"
-# just show what has been done
-GLIDER=selkie python -c "import config; config.status()"
-```
-
-## New data from the same glider
-
-Drop the new folder into `data/` and rerun. `01` converts every download
-folder it finds for that glider — downloads are not always cumulative, so
-using only the newest one would silently drop older segments.
-
-To restrict it, set `DATA_DIRS` at the top of `01_process_to_nc.py`.
 
 ## Choosing legs (segments)
 
@@ -166,6 +264,9 @@ Five tabs:
 - **Map** — bathymetry image + island outline + track through the
   surfacings, coloured by time + red arrows for the depth-averaged current
   over each surface-to-surface interval, and a **current rose** sub-tab.
+  Above the map, **pick a time period** and the surfacings inside it light up
+  in orange, with a count — that is how you find *where* the glider was when
+  something odd shows up in the data. `last 24 h` / `last 3 d` are shortcuts.
 
 ### Keeping the file small
 
@@ -179,10 +280,20 @@ fast. The levers, biggest first:
 | `SECTION_DECIMALS` | JSON stores numbers as text; every decimal is a character |
 | `N_TIME_WINDOWS` | each 3D slider step stores a full copy of the curtain |
 | `MAX_POINTS` | samples kept for the scatter tabs |
-| size of `bathymetry_PE500.png` | base64-embedded once per page |
+| size of the bathymetry image | base64-embedded once per page |
 
-Run `06_html_weight.py` to see where the megabytes actually are before
-cutting anything.
+## When something breaks
+
+| symptom | cause | fix |
+|---|---|---|
+| `no *.sbd files for "<glider>"` and the path looks wrong | wrong layout | `python config.py` to see what resolved; set `MACHINE`, or pass `DATA_LAYOUT=` |
+| Plots empty, `01` produced nothing | mode/suffix mismatch — looking for `dbd/ebd` when you have `sbd/tbd` | set `DATATYPE`, or `REALTIME=1` |
+| `NOT ONE *.tbd converted` | that file type's `.cac` sensor cache is missing (flight and science have different ones) | `GLIDER=<g> python diagnose_binaries.py`, then `COPY=1` to copy what it finds |
+| `OSError: no files to open` in the merge | same thing, one stage later | as above |
+| `ValueError: Cannot handle size zero dimensions` | empty segments | handled — `01` drops them from the merge copy |
+| `Segmentation fault` in the merge | non-threadsafe HDF5 in a pip venv + `lock=False` | handled — `01` forces dask's synchronous scheduler |
+| `PermissionError: [Errno 13]` writing an L0 file | the file is still open in a VS Code/Jupyter kernel | handled — `01` unlinks first; restarting the kernel also fixes it |
+| Only one day / no isopycnals in `02` | one profile in the gridfile, not a plotting bug | `GLIDER=<g> python inspect_L0.py` says which stage lost the data |
 
 ## Notes
 
@@ -196,16 +307,15 @@ cutting anything.
 - **Fewer points than expected?** Postprocessing cannot add samples. The
   realtime feed is decimated and, depending on the science configuration, may
   only sample on downcasts. The full record is in the `dbd`/`ebd` files after
-  recovery — set `REALTIME = False` (or `REALTIME=0` in the environment) and
-  rerun.
+  recovery — switch `DATATYPE` to `'recovered'` (or `REALTIME=0`) and rerun.
 - **Depth-averaged currents** are one estimate per dive, not a time series.
   `m_water_vx/vy` is what the glider computes between surfacings, so the map
   and rose average it over each surface-to-surface interval and draw one
   arrow per interval. `CURRENT_SKIP_FIRST` drops the early dives, where the
   estimate is unreliable.
 - Files `01` generates for its own use (`.state/<glider>/sensor_list_used.txt`,
-  `deployment_used.yml`) are safe to delete. Your `deployment_<glider>.yml`
-  is never modified.
+  `deployment_used.yml`, `staged/`) are safe to delete. Your
+  `deployment_<glider>.yml` is never modified.
 - Everything derived is gitignored, including `.state/` — it holds absolute
   paths from the machine that produced it, so a clone that inherited it would
   believe work was done that has no files behind it.
