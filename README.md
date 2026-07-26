@@ -1,7 +1,8 @@
 # Slocum glider data pipeline
 
-Turns Slocum glider binaries into netcdf, plots and an interactive web page,
-using [pyglider](https://pyglider.readthedocs.io).
+This repository is used for processing Slocum glider outputs and log files, primarily applied for operational use. You can process the *.tbd and *.sbd data, as well as all the log files (communicaiton with the glider) directly from glider while piloting it. It works for multiple gliders at the same time. The main resulting tool is the **interactive HTML site** where you can visualize various parameters and quickly see whether the gliders have any warnings and errors. Moreover, you can project the battery usage and plan an optimal recovery date. 
+
+Main tool for processing is based on [pyglider](https://pyglider.readthedocs.io).
 
 Several gliders are processed side by side — every output folder has one
 subfolder per glider, and the glider is chosen per process with an
