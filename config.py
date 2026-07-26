@@ -40,9 +40,25 @@ Per glider you need two hand-made inputs in the repo root:
     python config.py        # print what is configured and what has been done
 '''
 #%% ============================================================
-#   EDIT THIS
+#   EDIT THIS   (in practice: you almost never have to)
+#   ------------------------------------------------------------
+#   Two machines, one repo, and you should not have to edit this
+#   file to move between them. "realtime (VM) vs recovered (laptop)"
+#   is decided in this order, first hit wins:
+#
+#     1. REALTIME=... in the environment
+#        (run_gliders.py sets it; so does  REALTIME=0 python 01_...)
+#     2. MANUAL_REALTIME below, if you set it to True/False by hand
+#     3. auto-detect: is the VM's stream folder (~/data/rt-data)
+#        present?  yes -> VM/realtime,  no -> laptop/recovered
+#
+#   So on a LAPTOP in VS Code / Spyder / PyCharm you just press Run
+#   (or step through the #%% cells): rt-data isn't there, so it
+#   picks recovered + local data on its own. No terminal, no
+#   REALTIME=0 prefix, and nothing to accidentally commit.
 #   ============================================================
 import os
+from pathlib import Path
 
 # Default glider. Override per process without editing this file:
 #     GLIDER=unit_1272 python 01_process_to_nc.py
@@ -51,13 +67,59 @@ import os
 GLIDER = os.environ.get('GLIDER', 'selkie')
                            # must match metadata:glider_name in the yml
 
-# True  -> VM   : realtime sbd (flight) / tbd (science)
-# False -> local: recovered full-res dbd (flight) / ebd (science)
-# Override with  REALTIME=0 python ...
-REALTIME = os.environ.get('REALTIME', '1').lower() not in ('0', 'false', 'no')
-
-# Where the VM keeps the incoming stream. Only used when the layout is 'vm'.
+# Where the VM keeps the incoming stream. Only used when the layout is 'vm',
+# and doubles as the auto-detect probe below.
 VM_DATA_ROOT = '~/data/rt-data'
+
+# None -> auto-detect (recommended, works on both machines untouched).
+# Pin it only to force a mode:  False = laptop / recovered,
+# True = VM / realtime. An environment variable still overrides this.
+MANUAL_REALTIME = None
+
+_HERE = Path(__file__).resolve().parent
+
+
+def _has_binaries(folder):
+    '''True if `folder` holds at least one Slocum binary (any type/case).'''
+    folder = Path(folder)
+    if not folder.is_dir():
+        return False
+    for e in ('sbd', 'tbd', 'dbd', 'ebd'):
+        if next(folder.glob(f'*.{e}'), None) \
+                or next(folder.glob(f'*.{e.upper()}'), None):
+            return True
+    return False
+
+
+# True  -> VM   : realtime  sbd (flight) / tbd (science)
+# False -> local: recovered dbd (flight) / ebd (science)
+#
+# Auto-detect looks at WHERE THE DATA IS, not just whether ~/data/rt-data
+# exists - a stray empty rt-data folder on a laptop used to force VM mode by
+# mistake. It checks this glider's actual inbox in each layout and prefers
+# your local (repo) data.
+if os.environ.get('REALTIME') is not None:
+    REALTIME = os.environ['REALTIME'].strip().lower() \
+        not in ('0', 'false', 'no', 'off', '')
+    _REALTIME_SRC = 'REALTIME env'
+elif MANUAL_REALTIME is not None:
+    REALTIME = bool(MANUAL_REALTIME)
+    _REALTIME_SRC = 'MANUAL_REALTIME pinned in config.py'
+else:
+    _local_inbox = _HERE / 'data' / f'{GLIDER}-from-glider'
+    _vm_inbox = Path(VM_DATA_ROOT).expanduser() / GLIDER / 'from-glider'
+    if _has_binaries(_local_inbox):
+        REALTIME = False
+        _REALTIME_SRC = f'auto (recovered data in data/{GLIDER}-from-glider/)'
+    elif _has_binaries(_vm_inbox):
+        REALTIME = True
+        _REALTIME_SRC = f'auto (stream data in {VM_DATA_ROOT}/)'
+    else:
+        # nothing staged yet: only call it VM if that specific inbox exists,
+        # otherwise default to laptop (the safe, no-surprise choice)
+        REALTIME = _vm_inbox.exists()
+        _REALTIME_SRC = ('auto (VM inbox exists but empty)' if REALTIME
+                         else 'auto (no data yet -> laptop)')
 
 
 #%% ============================================================
@@ -158,7 +220,7 @@ def where(verbose=True):
     lines = [
         f'glider     : {GLIDER}',
         f'mode       : {"realtime" if REALTIME else "recovered"} '
-        f'({GLIDERSUFFIX}/{SCISUFFIX})',
+        f'({GLIDERSUFFIX}/{SCISUFFIX})   [{_REALTIME_SRC}]',
         f'layout     : {LAYOUT}'
         + ('   (from DATA_LAYOUT)' if 'DATA_LAYOUT' in os.environ else ''),
         f'data root  : {DATA_ROOT}'
