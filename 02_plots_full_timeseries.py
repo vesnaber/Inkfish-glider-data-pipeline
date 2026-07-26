@@ -180,7 +180,12 @@ def plot_sections(varlist, figname, isopycnals=False):
         pcm = ax.pcolormesh(grid.time, grid.depth, grid[v], cmap=cmap_of(v),
                             vmin=vmin, vmax=vmax, shading='nearest',
                             rasterized=True)
-        if isopycnals and 'potential_density' in grid and v != 'potential_density':
+        # contour() needs at least a 2x2 grid; a single profile (or a
+        # 1-bin depth axis) has nothing to contour, so skip it cleanly
+        # instead of crashing with "Input z must be at least (2, 2)".
+        if (isopycnals and 'potential_density' in grid
+                and v != 'potential_density'
+                and grid.time.size >= 2 and grid.depth.size >= 2):
             pden = grid['potential_density'].values - 1000
             levels = np.linspace(*clim(pden), N_CONTOURS)
             dl = np.diff(levels).mean() if len(levels) > 1 else 1

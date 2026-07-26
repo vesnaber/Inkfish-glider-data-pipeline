@@ -111,6 +111,33 @@ def tick(label):
     _TPREV = now
 
 
+def free_output(folder, pattern='*.nc'):
+    '''Remove stale outputs BEFORE pyglider writes them.
+
+    pyglider opens its output with mode 'w', which fails with
+    PermissionError if the existing file is read-only or still held open by
+    another process (classic: a VS Code / Jupyter kernel that has the file
+    open via xr.open_dataset, so a terminal run cannot overwrite it). On
+    Unix, unlinking first sidesteps both: the write lands on a fresh inode,
+    and any process still holding the old file keeps its own copy until it
+    closes. chmod first so a read-only file can be removed too.
+    '''
+    n = 0
+    for f in Path(folder).glob(pattern):
+        try:
+            f.chmod(0o644)
+        except OSError:
+            pass
+        try:
+            f.unlink()
+            n += 1
+        except OSError as e:
+            print(f'  could not remove stale {f.name}: {e}')
+    if n:
+        print(f'  cleared {n} stale {pattern} from {Path(folder).name}/ '
+              f'before writing')
+
+
 data_dirs = ([Path(d) for d in DATA_DIRS] if DATA_DIRS
              else config.all_data_dirs())
 
@@ -342,6 +369,7 @@ run, why = config.needs_rerun('timeseries', K_TS, outputs=[tsname],
                               force=forced('timeseries'))
 print(f'\nSTEP 3/5  timeseries   [{why}]')
 if run:
+    free_output(config.L0_TS)
     tsname = slocum.raw_to_timeseries(
         str(config.RAWNC_MERGED) + '/', str(config.L0_TS) + '/',
         str(DEPLOY_USED),
@@ -357,8 +385,16 @@ tick('timeseries')
 #%% ---------------- STAGE 4/5  profiles ----------------
 K_PROF = config.stage_key('profiles', {'yml': YML_FINGERPRINT}, upstream=K_TS)
 run, why = config.needs_rerun('profiles', K_PROF, force=forced('profiles'))
+# This stage stores a directory signature rather than one filename, so
+# needs_rerun has no `outputs` to check. Without this guard, a crash between
+# free_output() and the write would leave the folder empty AND the state
+# still valid -> skipped forever. The other stages get this for free via
+# outputs=[...].
+if not run and not any(config.L0_PROFILES.glob('*.nc')):
+    run, why = True, 'output missing (no profile files)'
 print(f'\nSTEP 4/5  profiles   [{why}]')
 if run:
+    free_output(config.L0_PROFILES)
     ncprocess.extract_timeseries_profiles(
         tsname, str(config.L0_PROFILES) + '/', str(DEPLOY_USED))
     config.write_state('profiles', K_PROF,
@@ -376,6 +412,7 @@ run, why = config.needs_rerun('grid', K_GRID, outputs=[gridname],
                               force=forced('grid'))
 print(f'\nSTEP 5/5  gridding   [{why}]')
 if run:
+    free_output(config.L0_GRID)
     gridname = ncprocess.make_gridfiles(
         tsname, str(config.L0_GRID) + '/', str(DEPLOY_USED))
     config.write_state('grid', K_GRID, gridname=str(gridname))

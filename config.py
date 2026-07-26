@@ -43,19 +43,26 @@ Per glider you need two hand-made inputs in the repo root:
 #   EDIT THIS   (in practice: you almost never have to)
 #   ------------------------------------------------------------
 #   Two machines, one repo, and you should not have to edit this
-#   file to move between them. "realtime (VM) vs recovered (laptop)"
-#   is decided in this order, first hit wins:
+#   file to move between them. Two INDEPENDENT things are detected:
 #
-#     1. REALTIME=... in the environment
-#        (run_gliders.py sets it; so does  REALTIME=0 python 01_...)
-#     2. MANUAL_REALTIME below, if you set it to True/False by hand
-#     3. auto-detect: is the VM's stream folder (~/data/rt-data)
-#        present?  yes -> VM/realtime,  no -> laptop/recovered
+#   * realtime vs recovered  <- decided by the file TYPE present
+#       realtime  = sbd (flight) / tbd (science)
+#       recovered = dbd (flight) / ebd (science)
+#     so realtime files copied onto a laptop are still read as
+#     realtime, instead of being mistaken for recovered (which then
+#     looks for dbd/ebd, finds nothing, and leaves every plot empty).
 #
-#   So on a LAPTOP in VS Code / Spyder / PyCharm you just press Run
-#   (or step through the #%% cells): rt-data isn't there, so it
-#   picks recovered + local data on its own. No terminal, no
-#   REALTIME=0 prefix, and nothing to accidentally commit.
+#   * folder layout          <- decided by WHERE the files are
+#       data/<glider>-from-glider  in the repo   = local
+#       ~/data/rt-data/<glider>/from-glider      = vm
+#
+#   They need not agree: realtime files in a local folder is exactly
+#   the normal case before a glider is recovered.
+#
+#   Precedence for each: environment variable (REALTIME / DATA_LAYOUT)
+#   -> MANUAL_* pin below -> auto-detect from the data. So on a LAPTOP
+#   in VS Code you just press Run - no terminal, no REALTIME= prefix,
+#   nothing to accidentally commit.
 #   ============================================================
 import os
 from pathlib import Path
@@ -67,60 +74,65 @@ from pathlib import Path
 GLIDER = os.environ.get('GLIDER', 'selkie')
                            # must match metadata:glider_name in the yml
 
-# Where the VM keeps the incoming stream. Only used when the layout is 'vm',
-# and doubles as the auto-detect probe below.
+# Where the VM keeps the incoming stream. Used when the layout is 'vm', and
+# one of the two places auto-detect looks for data.
 VM_DATA_ROOT = '~/data/rt-data'
 
-# None -> auto-detect (recommended, works on both machines untouched).
-# Pin it only to force a mode:  False = laptop / recovered,
-# True = VM / realtime. An environment variable still overrides this.
-MANUAL_REALTIME = None
+# Pin these only to force a choice; None = auto-detect (recommended).
+# Environment variables (REALTIME / DATA_LAYOUT) still override either.
+MANUAL_REALTIME = True      # None | False (recovered dbd/ebd) | True (realtime sbd/tbd)
+MANUAL_LAYOUT = None        # None | 'local' | 'vm'
 
 _HERE = Path(__file__).resolve().parent
+_LOCAL_INBOX = _HERE / 'data' / f'{GLIDER}-from-glider'
+_VM_INBOX = Path(VM_DATA_ROOT).expanduser() / GLIDER / 'from-glider'
 
 
-def _has_binaries(folder):
-    '''True if `folder` holds at least one Slocum binary (any type/case).'''
+def _exts_in(folder):
+    '''Which Slocum binary extensions actually exist in `folder`.'''
     folder = Path(folder)
-    if not folder.is_dir():
-        return False
-    for e in ('sbd', 'tbd', 'dbd', 'ebd'):
-        if next(folder.glob(f'*.{e}'), None) \
-                or next(folder.glob(f'*.{e.upper()}'), None):
-            return True
-    return False
+    found = set()
+    if folder.is_dir():
+        for e in ('sbd', 'tbd', 'dbd', 'ebd'):
+            if (next(folder.glob(f'*.{e}'), None)
+                    or next(folder.glob(f'*.{e.upper()}'), None)):
+                found.add(e)
+    return found
 
 
-# True  -> VM   : realtime  sbd (flight) / tbd (science)
-# False -> local: recovered dbd (flight) / ebd (science)
-#
-# Auto-detect looks at WHERE THE DATA IS, not just whether ~/data/rt-data
-# exists - a stray empty rt-data folder on a laptop used to force VM mode by
-# mistake. It checks this glider's actual inbox in each layout and prefers
-# your local (repo) data.
+# WHERE is the data -> which layout, preferring the repo-local folder.
+_local_exts = _exts_in(_LOCAL_INBOX)
+_vm_exts = _exts_in(_VM_INBOX)
+if _local_exts:
+    _LAYOUT_AUTO = 'local'
+    _AUTO_EXTS = _local_exts
+    _WHERE = f'data/{GLIDER}-from-glider'
+elif _vm_exts:
+    _LAYOUT_AUTO = 'vm'
+    _AUTO_EXTS = _vm_exts
+    _WHERE = VM_DATA_ROOT
+else:
+    _LAYOUT_AUTO = None
+    _AUTO_EXTS = set()
+    _WHERE = None
+
+# WHAT TYPE is the data -> realtime vs recovered.
 if os.environ.get('REALTIME') is not None:
-    REALTIME = os.environ['REALTIME'].strip().lower() \
-        not in ('0', 'false', 'no', 'off', '')
+    REALTIME = (os.environ['REALTIME'].strip().lower()
+                not in ('0', 'false', 'no', 'off', ''))
     _REALTIME_SRC = 'REALTIME env'
 elif MANUAL_REALTIME is not None:
     REALTIME = bool(MANUAL_REALTIME)
     _REALTIME_SRC = 'MANUAL_REALTIME pinned in config.py'
+elif _AUTO_EXTS & {'dbd', 'ebd'}:
+    REALTIME = False
+    _REALTIME_SRC = f'auto (recovered dbd/ebd in {_WHERE})'
+elif _AUTO_EXTS & {'sbd', 'tbd'}:
+    REALTIME = True
+    _REALTIME_SRC = f'auto (realtime sbd/tbd in {_WHERE})'
 else:
-    _local_inbox = _HERE / 'data' / f'{GLIDER}-from-glider'
-    _vm_inbox = Path(VM_DATA_ROOT).expanduser() / GLIDER / 'from-glider'
-    if _has_binaries(_local_inbox):
-        REALTIME = False
-        _REALTIME_SRC = f'auto (recovered data in data/{GLIDER}-from-glider/)'
-    elif _has_binaries(_vm_inbox):
-        REALTIME = True
-        _REALTIME_SRC = f'auto (stream data in {VM_DATA_ROOT}/)'
-    else:
-        # nothing staged yet: only call it VM if that specific inbox exists,
-        # otherwise default to laptop (the safe, no-surprise choice)
-        REALTIME = _vm_inbox.exists()
-        _REALTIME_SRC = ('auto (VM inbox exists but empty)' if REALTIME
-                         else 'auto (no data yet -> laptop)')
-
+    REALTIME = False
+    _REALTIME_SRC = 'auto (no data found -> recovered default)'
 
 #%% ============================================================
 #   paths
@@ -131,7 +143,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 
 # ---- input location: this is the part that differs per deployment -------
-LAYOUT = os.environ.get('DATA_LAYOUT', 'vm' if REALTIME else 'local').lower()
+LAYOUT = os.environ.get('DATA_LAYOUT',
+                        MANUAL_LAYOUT or _LAYOUT_AUTO
+                        or ('vm' if REALTIME else 'local')).lower()
 if LAYOUT not in ('vm', 'local'):
     raise SystemExit(f'DATA_LAYOUT must be "vm" or "local", got {LAYOUT!r}')
 
