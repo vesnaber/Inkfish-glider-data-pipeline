@@ -54,8 +54,8 @@ DATATYPE = 'auto'      # 'realtime' | 'recovered' | 'auto' (set it up based on w
 Summary: 
 | switch | what it decides | values |
 |---|---|---|
-| `MACHINE` | where the **data folders** are | `local` = `<repo>/data/<glider>-from-glider/` \n `vm` = `~/data/rt-data/<glider>/from-glider/` |
-| `DATATYPE` | which **binaries** to read | `realtime` = `sbd`/`tbd` \n `recovered` = `dbd`/`ebd` |
+| `MACHINE` | where the **data folders** are | `local` = `<repo>/data/<glider>-from-glider/`  •  `vm` = `~/data/rt-data/<glider>/from-glider/` |
+| `DATATYPE` | which **binaries** to read | `realtime` = `sbd`/`tbd`  •  `recovered` = `dbd`/`ebd` |
 
 `'auto'` works it out from the data on disk: location decides `MACHINE`,
 file extension decides `DATATYPE`.

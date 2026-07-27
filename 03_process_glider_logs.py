@@ -387,8 +387,12 @@ def finish_surfacings(df):
 
     # NEW problems since the previous dump. Counters reset when the glider
     # resets, so a negative diff means "reset", not "-3 errors".
+    # ffill first: a truncated dump (garbled over Iridium, no
+    # "devices:(t/m/s)" line) leaves NaN, and diffing straight through it
+    # loses the NEXT real increase as well - the log book then reads clean
+    # while the device panels light up.
     for kind in ('err', 'warn', 'odd'):
-        d = df[f'{kind}_total'].diff()
+        d = df[f'{kind}_total'].ffill().diff()
         df[f'new_{kind}'] = d.clip(lower=0).fillna(0).astype('Int64')
 
     df['severity'] = np.select(
@@ -403,9 +407,19 @@ def finish_devices(df):
     '''per-device delta of the cumulative totals'''
     if df.empty:
         return df
+    # When comms are flaky the glider retransmits an identical dump: same
+    # "Curr Time:", same device table. Those extra rows are the same
+    # measurement, not a new one - keep one per (time, device) so the
+    # deltas and any downstream sum are counted once.
+    n0 = len(df)
+    df = df.drop_duplicates(['time', 'device'], keep='last')
+    if len(df) < n0:
+        print(f'   dropped {n0 - len(df)} duplicate device rows '
+              f'(retransmitted dumps)')
     df = df.sort_values(['device', 'time']).reset_index(drop=True)
     for kind in ('err', 'warn', 'odd'):
-        d = df.groupby('device')[f'{kind}_total'].diff()
+        d = df.groupby('device')[f'{kind}_total'].ffill().groupby(
+            df['device']).diff()
         df[f'new_{kind}'] = d.clip(lower=0).fillna(0).astype(int)
     return df.sort_values(['time', 'dev_index']).reset_index(drop=True)
 

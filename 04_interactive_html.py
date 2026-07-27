@@ -1656,6 +1656,23 @@ def logbook_html(surf):
         if 'surfacing_id' in df else int(df['abort_event'].sum())
 
     if LOG_ONLY_LAST_DUMP and 'last_dump' in df:
+        # The counts are per-DUMP deltas, but we are about to show one row
+        # per SURFACING. A problem that appeared between dump 1 and dump 2
+        # would vanish when only the last dump survives - the row would read
+        # "clean" while the device panels clearly show it. So roll the
+        # deltas up to the surfacing first (abort_event is already spread
+        # this way in mark_abort_events) and re-derive severity from the
+        # totals actually being displayed.
+        if 'surfacing_id' in df:
+            for k in ('new_err', 'new_warn', 'new_odd'):
+                if k in df:
+                    df[k] = (df.groupby('surfacing_id')[k]
+                               .transform('sum').astype('Int64'))
+            df['severity'] = np.select(
+                [df['new_err'].fillna(0) > 0,
+                 df['new_warn'].fillna(0) > 0,
+                 df['new_odd'].fillna(0) > 0],
+                ['error', 'warning', 'oddity'], default='ok')
         df = df[df['last_dump'].fillna(True).astype(bool)]
     df = df.sort_values('time', ascending=False).head(LOG_TABLE_MAX_ROWS)
 
