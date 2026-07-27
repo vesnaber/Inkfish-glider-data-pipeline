@@ -2,21 +2,28 @@
 
 This repository is used for processing Slocum glider outputs and log files, primarily applied for operational use. You can process the *.tbd and *.sbd data, as well as all the log files (communicaiton with the glider) directly from glider while piloting it. It works for multiple gliders at the same time. The main resulting tool is the **interactive HTML site** where you can visualize various parameters and quickly see whether the gliders have any warnings and errors. Moreover, you can project the battery usage and plan an optimal recovery date. 
 
-Main tool for processing is based on [pyglider](https://pyglider.readthedocs.io).
+Main processing (raw --> nc files) is done using [pyglider](https://pyglider.readthedocs.io).
 
-Several gliders are processed side by side — every output folder has one
-subfolder per glider, and the glider is chosen per process with an
-environment variable, so nothing collides.
+**Multiple gliders can be processed and plotted at the same time. Every output folder has one subfolder per glider, and the glider names are defined by their `deployment_<glider_name>.yml` file name in the repo root. That filename is the glider name, and it must also match metadata (glider_name) inside the yml and the prefix of the binary filenames. So if you have multiple `deployment_<glider_name>.yml` files, you can process this many of the gliders.**
 
+Files in the repository:
 ```
-config.py                     <- the two knobs + all paths (the one file you may edit)
-fresh_start.py                <- run first: makes folders, checks the setup
-deployment_<glider>.yml       <- metadata + sensor -> variable mapping (you write this)
-sensor_list_<glider>.txt      <- written by 00, do not edit by hand
-run_gliders.py                <- runs every step for every glider
+config.py                     <- definition of all paths (there can be different locaiton where data is stored whether you are working locally or on a irtual machine)
+fresh_start.py                <- run this first. This script makes all the missing folders and checks the setup (whether you have the correct python packages installed in your kernel/venv)
+deployment_<glider>.yml       <- metadata + sensor variables definiton for creating nc files (check and write it up at the very beginning of deployment)
+sensor_list_<glider>.txt      <- this file gets created/re-written by 00 script, do not edit it by hand (!)
+run_gliders.py                <- this is the main script that runs all necessary scripts for every glider (by default it runs for every gldier)
+
+00_build_sensor_list.py.      <- these scripts are described below
+01_process_to_nc.py
+02_plots_full_timeseries.py
+03_process_glider_logs.py
+03b_battery_status.py  
+04_interactive_html.py
+05_interactive_html_merge_gliders.py
 
 cache/<glider>/               \
-rawnc/<glider>/segments/       |  created automatically
+rawnc/<glider>/segments/       |  this files are not in the github repository, but they get created automatically
 rawnc/<glider>/merged/         |  (all gitignored)
 L0-timeseries/<glider>/        |
 L0-profiles/<glider>/          |
@@ -24,22 +31,31 @@ L0-gridfiles/<glider>/         |
 L0-logs/<glider>/              |
 plots/<glider>/                |
 interactive/<glider>/          |
-.state/<glider>/              /   <- what has already been processed
+.state/<glider>/              /   <- this folder tracks what has already been processed (to avoid re-processign the same segments)
 ```
 
-## The two knobs
+## Do you work on local computer or on virtual machine? Set it up accordingly:
 
-Two important switches in `config.py`:
 
+Currently in `config.py` we define two different locations where the data is stored (current configuration in RV Hydra): 
+- when you work on your local computer and you download the data files and log files from [SFMC website](https://sfmc.webbresearch.com/), you need to insert the data files in folder: `<repo>/data/<glider>-from-glider/` and log files in the folder: `<repo>/data/<glider>-logs/`
+- currently when you work on RV Hydra virtual machine enviroment (i.e. VM), the idea is that your data is automatically being downloaded (near-real-time) to folder `~/data/rt-data/<glider>/from-glider/`. In order for this to work properly, you need to set up a few things in VM t the beginning of the new deployment. 
+
+Besides setting up the correct folders where the data is stored, you also should know (and define) what kind of data you have. There ar two types of dataset that glider produces: 
+- **realtime** data is stored as`sbd`/`tbd` files: these are confined files that contain information about science and glider flight per segment. They are small (as small as you decide them to be) and show measuring variables at every X seconds. It is advised that the gliders are set to download these files every time the glider has a connection with you/the satellite (when the glider is on the surface)
+- **recovered** data is stored as `dbd`/`ebd` files: these are files that contain the full timeseries from the glider. These are large fiels and usually they are downloaded from the glider at the very end (when the glider is back on board).
+
+Anothen thing to check is: how do the scritp know whether your setup is local computer or VM. By default, it is set automatically (the script first check whether you have any files in data/from-glider<glider>, and if not, checks whether there are folders and files as they should be in VM), but to have more control over this (and in case you have data in both folders), it is more rubust to set this up manually in `config.py` script. This can be done by changing the variables MACHINE and DATATYPE:
 ```python
-MACHINE  = 'auto'      # 'local' | 'vm'          | 'auto'
-DATATYPE = 'auto'      # 'realtime' | 'recovered' | 'auto'
+MACHINE  = 'auto'      # 'local' | 'vm'          | 'auto' (set it up based on your workflow)
+DATATYPE = 'auto'      # 'realtime' | 'recovered' | 'auto' (set it up based on whether you want to process sbd/tbd files (=realtime) or dbd/ebd files (=recovered)
 ```
 
-| knob | what it decides | values |
+Summary: 
+| switch | what it decides | values |
 |---|---|---|
-| `MACHINE` | where the **data folders** are | `local` = `<repo>/data/<glider>-from-glider/`  •  `vm` = `~/data/rt-data/<glider>/from-glider/` |
-| `DATATYPE` | which **binaries** to read | `realtime` = `sbd`/`tbd`  •  `recovered` = `dbd`/`ebd` |
+| `MACHINE` | where the **data folders** are | `local` = `<repo>/data/<glider>-from-glider/` \n `vm` = `~/data/rt-data/<glider>/from-glider/` |
+| `DATATYPE` | which **binaries** to read | `realtime` = `sbd`/`tbd` \n `recovered` = `dbd`/`ebd` |
 
 `'auto'` works it out from the data on disk: location decides `MACHINE`,
 file extension decides `DATATYPE`.
