@@ -21,12 +21,31 @@ OUT_NAME = 'all_gliders.html'
 DEFAULT  = None         # glider shown on open; None = the first one
 SHOW_META = True        # print size + build time of each page under the tabs
 
+LINK_PREFIX = 'auto'    # how the iframe/link URLs are written:
+                        #   'auto' -> '/interactive/' on the VM (MACHINE=vm),
+                        #             relative on a laptop (MACHINE=local)
+                        #   ''     -> force relative  (selkie/selkie.html)
+                        #   '/x/'  -> force any prefix you like
+                        # Why it matters: on the VM the pages are SERVED, and
+                        # the browser resolves links against the server root,
+                        # so they must start with /<folder>/.
+
 #%% ---------------- collect the pages ----------------
 from pathlib import Path
 import datetime as dt
 
 HTML_ROOT = config.HTML.parent          # interactive/  (config.HTML is per glider)
 OUT = HTML_ROOT / OUT_NAME
+
+# Derive the prefix from the folder name rather than hardcoding
+# '/interactive/', so renaming the folder cannot silently break the links.
+if LINK_PREFIX == 'auto':
+    PREFIX = f'/{HTML_ROOT.name}/' if config.LAYOUT == 'vm' else ''
+    _why = f'auto (MACHINE={config.LAYOUT})'
+else:
+    PREFIX = LINK_PREFIX
+    _why = 'LINK_PREFIX set by hand'
+print(f'link style : {PREFIX or "relative"}   [{_why}]')
 
 
 def known_gliders():
@@ -45,7 +64,8 @@ for g in names:
     st = p.stat()
     pages.append(dict(
         glider=g,
-        rel=f'{g}/{g}.html',            # relative -> the folder stays movable
+        rel=f'{PREFIX}{g}/{g}.html',    # served path on the VM, relative on
+                                        # a laptop - see LINK_PREFIX above
         mb=st.st_size / 1e6,
         when=dt.datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M')))
 
