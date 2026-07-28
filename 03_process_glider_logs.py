@@ -43,6 +43,16 @@ DROP_STALE_SENSORS = True      # a sensor reported "1e+308 secs ago" has never
                                # age as NaN. True also drops it from the
                                # timeseries used by the plots.
 
+ONLY_SINCE_DEPLOYMENT = True   # Keep only dumps from metadata:deployment_start
+                               # onwards - the same cutoff 01 applies to the
+                               # binaries. Surface dialogs accumulate in one
+                               # folder across deployments, so without this
+                               # the Logs and Battery tabs show old missions
+                               # while every other tab shows only this one.
+DEPLOYMENT_START = None        # None = read it from deployment_<glider>.yml.
+                               # Or override here: '2026-07-17' /
+                               # '2026-07-17 12:00'.
+
 MIN_RECORDS = 1                # warn if a file yields fewer than this
 
 
@@ -357,6 +367,20 @@ def parse_file(path):
     return recs, sens, devs
 
 
+def deployment_cutoff(glider=None):
+    '''Start of THIS deployment as a Timestamp, or None for no filtering.
+
+    Same source 01 uses for the binaries (metadata:deployment_start), so the
+    logs and the science data cover the same period instead of the Logs tab
+    quietly reaching back into the previous mission.'''
+    if not ONLY_SINCE_DEPLOYMENT:
+        return None
+    if DEPLOYMENT_START:
+        return pd.Timestamp(DEPLOYMENT_START)
+    s = config.deployment_start(glider)
+    return None if s is None else pd.Timestamp(str(s))
+
+
 def find_logs(glider):
     '''Everything in data/<glider>-logs/. The folder is already per glider,
     so no name filtering is needed - and dockserver dialogs are named by
@@ -444,6 +468,35 @@ def build(glider):
     if not recs:
         print('   nothing parsed')
         return None
+
+    # Cut to this deployment BEFORE finish_surfacings. The counters are
+    # cumulative, so the deltas are diffs against the previous dump: filter
+    # afterwards and the first row of the mission would be diffed against a
+    # dump from the PREVIOUS deployment, inventing a huge jump (or, on a
+    # reset, hiding a real one). Filtering first makes the first in-mission
+    # dump the baseline, which is the honest answer - we cannot attribute
+    # anything that happened before the glider went in the water.
+    cut = deployment_cutoff(glider)
+    if cut is not None:
+        n0, n0s, n0d = len(recs), len(sens), len(devs)
+        oldest = min(r['time'] for r in recs)
+        recs = [r for r in recs if r['time'] >= cut]
+        sens = [r for r in sens if r['time'] >= cut]
+        devs = [r for r in devs if r['time'] >= cut]
+        dropped = n0 - len(recs)
+        print(f'   deployment_start {cut:%Y-%m-%d %H:%M} -> keeping '
+              f'{len(recs)}/{n0} dumps, {len(sens)}/{n0s} sensor rows, '
+              f'{len(devs)}/{n0d} device rows')
+        if dropped:
+            print(f'   dropped {dropped} dumps from before it '
+                  f'(oldest was {oldest:%Y-%m-%d %H:%M}) - previous mission')
+        if not recs:
+            print(f'   !! NOTHING left after {cut:%Y-%m-%d %H:%M}. Check '
+                  f'deployment_start in {config.DEPLOYMENT.name}, or set '
+                  f'ONLY_SINCE_DEPLOYMENT = False.')
+            return None
+    else:
+        print('   no deployment_start - keeping every dump in the folder')
 
     surf = finish_surfacings(pd.DataFrame(recs))
     # keep only this glider if the files were mixed
