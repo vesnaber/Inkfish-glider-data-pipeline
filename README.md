@@ -4,11 +4,11 @@ This repository is used for processing Slocum glider outputs and log files, prim
 
 Main processing (raw --> nc files) is done using [pyglider](https://pyglider.readthedocs.io).
 
-**Multiple gliders can be processed and plotted at the same time. Every output folder has one subfolder per glider, and the glider names are defined by their `deployment_<glider_name>.yml` file name in the repo root. That filename is the glider name, and it must also match metadata (glider_name) inside the yml and the prefix of the binary filenames. So if you have multiple `deployment_<glider_name>.yml` files, you can process this many of the gliders.**
+**Multiple gliders can be processed and plotted at the same time. Every output folder has one subfolder per glider, and the glider names are defined by their `deployment_<glider_name>.yml` file name in the repo root. That filename is the glider name, and it must also match metadata (glider_name) inside the yml and the prefix of the binary filenames. So, if you have multiple `deployment_<glider_name>.yml` files, you can process multiple gliders at the same time.**
 
 Files in the repository:
 ```
-config.py                     <- definition of all paths (there can be different locaiton where data is stored whether you are working locally or on a irtual machine)
+config.py                     <- definition of all paths and dependancies
 fresh_start.py                <- run this first. This script makes all the missing folders and checks the setup (whether you have the correct python packages installed in your kernel/venv)
 deployment_<glider>.yml       <- metadata + sensor variables definiton for creating nc files (check and write it up at the very beginning of deployment)
 sensor_list_<glider>.txt      <- this file gets created/re-written by 00 script, do not edit it by hand (!)
@@ -34,6 +34,71 @@ interactive/<glider>/          |
 .state/<glider>/              /   <- this folder tracks what has already been processed (to avoid re-processign the same segments)
 ```
 
+## How to start?
+
+First, clone this repository on your local computer or virtual machine. After cloning install all the necessary python packages. If you are using conda, follow these steps:
+
+```bash
+conda create -n gliderwork python=3.12
+conda activate gliderwork
+conda install -c conda-forge pyglider dbdreader cmocean gsw plotly pyshp netcdf4 pyarrow
+```
+
+The very first script you need to run is: 
+
+```bash
+python fresh_start.py
+```
+
+With running the `fresh_start.py` script, you go through `config.py` file, check the `.yml` files and check if you have all necessary python packages installed. The script prints the amount of existing 
+flight and science files (if any), and whether you have cache files. It also creates the missing folders that are needed to follow the pipeline.
+
+Follow orders of `fresh_start.py` and set up the missing files and variables. The most important steps to follow are:
+
+1. **Write a new `deployment_<glider>.yml`.** Copy the example, rename it, set the
+   `metadata:` block (`glider_name` must match the file name) with correct starting date of your deployment and your personal informaiton, under
+   `netcdf_variables:`, each entry's `source:` = the Slocum sensor name.
+   You do *not* have to remove sensors your glider lacks — `01` skips them
+   with a warning. Make sure you do not leave any parts of `metadata` empty!
+   **Specifically focus on setting `deployment_start:` correctly.** Without it, old missions still sitting in
+   the data folder get processed too and the plots might look messy.
+   **If you have multiple gliders at the same time, make `.yml` file for each glider separately!!**
+2. **Download the cache files from [SFMC website](https://sfmc.webbresearch.com/)**: You need to download cache files 
+that are specific to your gliders. Place them in folder: `cache/<glider_name>` for each glider separately. Rather have more cache files then too little. 
+3. **Put the glider binaries in the right folders**: for each glider, download the data from [SFMC website](https://sfmc.webbresearch.com/) that can be found under the buttom from-glider and store it: 
+- if working on local computer: `data/<glider>-from-glider/` 
+- if workin on VM: `~/data/rt-data/<glider>/from-glider/`
+- if you store it somewhere else, make sure you change the `config.py` file to specify the correct folder
+4. **Put the glider logs in the right folders**: for each glider, download the logs from [SFMC website](https://sfmc.webbresearch.com/) that can be found under the buttom logs and store it: 
+- if working on local computer: `data/<glider>-logs/` 
+- if workin on VM: `~/data/rt-data/<glider>/logs/`
+- if you store it somewhere else, make sure you change the `config.py` file to specify the correct folder
+5. **Optional: to create maps with bathyemtry:** an ASCII grid in
+   `data/bathymetry_xyz/` and an image of a bathyemtry together with longitude and latitude bounds `.bounds` file in
+   `data/bathymetry_image/`.
+6. Rerun `python fresh_start.py` to check if you are still missing something.
+
+
+## Running scripts from a terminal
+
+| script | what it does |
+|---|---|
+| `00_build_sensor_list.py` | Looks inside the binaries, writes `sensor_list_<glider>.txt` with only the sensors that actually carry measurements. Needed once per glider. |
+| `01_process_to_nc.py` | Binaries → netcdf. **Incremental** — see below. |
+| `02_plots_full_timeseries.py` | Static figures for the whole deployment. The first cell holds everything worth changing. |
+| `03_process_glider_logs.py` | Parses the surface dialogs into `L0-logs/<glider>/`. |
+| `03b_battery_status.py` | Battery trend from the parsed logs. |
+| `04_interactive_html.py` | `interactive/<glider>/<glider>.html` — a normal file, no server. |
+| `05_interactive_html_merge_gliders.py` | `interactive/all_gliders.html` — a button per glider, each page loaded on first click. |
+| `diagnose_binaries.py` | Reads a binary's header, works out which `.cac` it needs, and says whether it is there. Use when a file type refuses to convert. |
+
+The quickest and easiest way to run the scripts is to run them all at the same time with `run_gliders.py` script as:
+
+```bash
+python run_gliders.py            # prints out your configuration for the default glider
+```
+This script runs the entire chain (00 → 01 → 03 → 03b → 04 → 05) for as many gliders as you have `.yml` files. The log of this run is saved as: `logs/<glider>_<timestamp>.log`.
+
 ## Are you working on a local computer or on virtual machine? Set it up accordingly:
 
 Currently in `config.py` we define two different locations where the data is stored (current configuration in RV Hydra): 
@@ -53,16 +118,13 @@ DATATYPE = 'auto'      # set it up insted to: 'realtime' | 'recovered' | 'auto' 
 ```
 
 Summary: 
-| switch | what it decides | values |
+| variable | what is it | possible values values |
 |---|---|---|
 | `MACHINE` | where the **data folders** are | `local` = `<repo>/data/<glider>-from-glider/`  •  `vm` = `~/data/rt-data/<glider>/from-glider/` |
 | `DATATYPE` | which **binaries** to read | `realtime` = `sbd`/`tbd`  •  `recovered` = `dbd`/`ebd` |
 
-`'auto'` works it out from the data on disk: location decides `MACHINE`,
-file extension decides `DATATYPE`.
 
-Environment variables override both, per axis, so `run_gliders.py` and the VM
-keep working no matter how the file is pinned:
+It is also possible to override these variables by running the script via the Terminal witht he followign environemntal variables:
 
 | env var | overrides | values |
 |---|---|---|
@@ -71,54 +133,14 @@ keep working no matter how the file is pinned:
 | `REALTIME` | `DATATYPE` | `1` (realtime), `0` (recovered) |
 | `GLIDER_DATA_ROOT` | the data root | any path |
 
-**Outputs always stay in the repo**, in both layouts — only the *input*
-location moves.
-
-Check what actually resolved before a long run:
-
+You can use this as:
 ```bash
-python config.py            # prints mode + layout, each with its reason
+GLIDER=selkie python <script_you_want_to_run>.py               # run this script for selkie glider only
+DATA_LAYOUT=local python <script_you_want_to_run>.py           # run this script on your lcoal computer
+GLIDER=selkie REALTIME=1 python <script_you_want_to_run>.py    # run this script if you want to process the sbd/tbd files from selkie
 ```
 
-## Running from a terminal
-
-`run_gliders.py` runs the whole chain (00 → 01 → 03 → 03b → 04 → 05) for one
-or more gliders, one subprocess each, streaming output and writing
-`logs/<glider>_<timestamp>.log`.
-
-**1. Home (local) + realtime**
-
-```bash
-python run_gliders.py -r 1 --layout local
-```
-
-**2. Home (local) + recovered**
-
-```bash
-python run_gliders.py -r 0 --layout local
-```
-
-**3. VM + realtime** — the normal VM case, and the defaults
-
-```bash
-python run_gliders.py
-# explicit equivalent:
-python run_gliders.py -r 1 --layout vm
-```
-
-**4. VM + recovered**
-
-```bash
-python run_gliders.py -r 0 --layout vm --data-root ~/data/<recovered-folder>
-```
-
-`--layout vm` alone points at `~/data/rt-data`, which holds the *stream*.
-Recovered `dbd`/`ebd` live somewhere else, so pass `--data-root`.
-GUESSING!! at where recovered data gets staged on the VM — set it to
-whatever is true.
-
-**5. One script, or one glider, in any configuration**
-
+Or another way:
 ```bash
 python run_gliders.py -g selkie --only 01              # one glider, one step
 python run_gliders.py -g selkie unit_1272 --only 04 05 # two gliders, the html
@@ -127,81 +149,29 @@ python run_gliders.py -j 1                             # sequential, readable lo
 python run_gliders.py --list                           # preview, run nothing
 ```
 
-`--only` / `--skip` match on any part of the filename, so `04`,
-`interactive` and `04_interactive_html.py` all work. Combine freely with
-`-r` / `--layout`.
-
-Or call a script directly — simplest when debugging, since the environment
-is right there in the command:
+If you want to check your configuration, run this in Terminal:
 
 ```bash
-GLIDER=selkie REALTIME=0 DATA_LAYOUT=local python 01_process_to_nc.py
+python config.py            # prints out your configuration for the default glider
 ```
 
-**6. Only the plots (02)**
+
+## Run fils with recovered data (not yet tested):
 
 ```bash
-GLIDER=selkie REALTIME=1 DATA_LAYOUT=local python 02_plots_full_timeseries.py
+python run_gliders.py -r 0 --layout local --data-root /data/<recovered-folder>
 ```
 
-`02` is deliberately **not** in `run_gliders.py`'s `SCRIPTS` list, so
-`--only 02` fails with "matched nothing". Run it directly, or add it to that
-list.
+## Housekeeping
 
-**Housekeeping, any configuration**
+In order to not re-process the segments that are already processed, the code creates .status folder where you store the informaiton about what has already been processed and what not. This saves some time in processing the data and creating the interactive html whenever you have new data available. 
 
+You can check the status and, if needed, clear the status:
 ```bash
 GLIDER=selkie python -c "import config; config.status()"           # what's done
 GLIDER=selkie python -c "import config; config.clear_outputs()"    # forget L0, keep the conversion
 GLIDER=selkie python -c "import config; config.clear_outputs(rawnc=True)"  # also redo the slow step
 ```
-
-## Fresh start
-
-After cloning:
-
-```bash
-conda create -n gliderwork python=3.12
-conda activate gliderwork
-conda install -c conda-forge pyglider dbdreader cmocean gsw plotly pyshp netcdf4 pyarrow
-
-python fresh_start.py
-```
-
-`fresh_start.py` asks `config` where things are, so it reports the *real*
-inbox for the machine it runs on. It prints flight vs science file counts
-separately, how many files survive the filter, and whether the sensor cache
-is present. It changes nothing that already exists.
-
-It will tell you to do these, in order:
-
-1. **Write `deployment_<glider>.yml`.** Copy the example, rename it, set the
-   `metadata:` block (`glider_name` must match the file name) and, under
-   `netcdf_variables:`, each entry's `source:` = the Slocum sensor name.
-   You do *not* have to remove sensors your glider lacks — `01` skips them
-   with a warning.
-2. **Set `deployment_start:` under `metadata:`.** Everything before that
-   date is ignored (see below). Without it, old missions still sitting in
-   the folder get processed too.
-3. **Put the binaries in the inbox** — one folder, no timestamp:
-   `data/<glider>-from-glider/` locally, or
-   `~/data/rt-data/<glider>/from-glider/` on the VM. New downloads just add
-   to it; already-converted files are skipped.
-4. **Optional, for the map and 3D tabs:** an ASCII grid in
-   `data/bathymetry_xyz/` and an image plus a `.bounds` sidecar in
-   `data/bathymetry_image/`. Both tabs work without them, just plainer.
-5. Rerun `python fresh_start.py` until it is happy.
-
-| script | what it does |
-|---|---|
-| `00_build_sensor_list.py` | Looks inside the binaries, writes `sensor_list_<glider>.txt` with only the sensors that actually carry measurements. Needed once per glider. |
-| `01_process_to_nc.py` | Binaries → netcdf. **Incremental** — see below. |
-| `02_plots_full_timeseries.py` | Static figures for the whole deployment. The first cell holds everything worth changing. |
-| `03_process_glider_logs.py` | Parses the surface dialogs into `L0-logs/<glider>/`. |
-| `03b_battery_status.py` | Battery trend from the parsed logs. |
-| `04_interactive_html.py` | `interactive/<glider>/<glider>.html` — a normal file, no server. |
-| `05_interactive_html_merge_gliders.py` | `interactive/all_gliders.html` — a button per glider, each page loaded on first click. |
-| `diagnose_binaries.py` | Reads a binary's header, works out which `.cac` it needs, and says whether it is there. Use when a file type refuses to convert. |
 
 ## Which files get picked up
 
@@ -285,22 +255,16 @@ Five tabs:
   Above the map, **pick a time period** and the surfacings inside it light up
   in orange, with a count — that is how you find *where* the glider was when
   something odd shows up in the data. `last 24 h` / `last 3 d` are shortcuts.
+- THIS NEEDS TO BE UPDATED
 
-### Keeping the file small
+## Troubleshooting: 
 
-Every dropdown option embeds its own copy of the data, so the page grows
-fast. The levers, biggest first:
+- **missing cache**: check if you have all needed caches from [SFMC website](https://sfmc.webbresearch.com/). If you are missing any of them, the processing will not work. Make sure you download them all. It is better to have too many than too little of them. 
+- **cache incorrect**: sometimes cache gets saves as `.CAC` instead of `.cac`. In that case manually change the name of the cache file to be `.cac`. 
+- **change of settings**: you have new settings, but .status remembered the old one. In that case delete the .status folder and re-run everything.
+- **wroge mode**: you are running in `recovered` mode, while your data is `sbd`/`tbd`. In that case check your `config.py` file or override the scripts with `REALTIME=1` or `-r 1` (see above) when running in Terminal.
 
-| setting | effect |
-|---|---|
-| `SECTION_DEPTH_STRIDE` | keep every Nth depth bin. A 340 px panel cannot draw 1100 rows; 4 is visually identical and 4× smaller. **The biggest one.** |
-| `SECTION_MAX_COLS` | hard cap on time columns per panel |
-| `SECTION_DECIMALS` | JSON stores numbers as text; every decimal is a character |
-| `N_TIME_WINDOWS` | each 3D slider step stores a full copy of the curtain |
-| `MAX_POINTS` | samples kept for the scatter tabs |
-| size of the bathymetry image | base64-embedded once per page |
 
-## When something breaks
 
 | symptom | cause | fix |
 |---|---|---|
@@ -322,18 +286,7 @@ fast. The levers, biggest first:
   `gsw`, using the depth axis as pressure (dbar ≈ m). For the recovered
   full-resolution dataset prefer pyglider's own salinity plus its
   [CTD adjustment](https://pyglider.readthedocs.io/en/latest/adjust_CTD.html).
-- **Fewer points than expected?** Postprocessing cannot add samples. The
-  realtime feed is decimated and, depending on the science configuration, may
-  only sample on downcasts. The full record is in the `dbd`/`ebd` files after
-  recovery — switch `DATATYPE` to `'recovered'` (or `REALTIME=0`) and rerun.
 - **Depth-averaged currents** are one estimate per dive, not a time series.
   `m_water_vx/vy` is what the glider computes between surfacings, so the map
   and rose average it over each surface-to-surface interval and draw one
-  arrow per interval. `CURRENT_SKIP_FIRST` drops the early dives, where the
-  estimate is unreliable.
-- Files `01` generates for its own use (`.state/<glider>/sensor_list_used.txt`,
-  `deployment_used.yml`, `staged/`) are safe to delete. Your
-  `deployment_<glider>.yml` is never modified.
-- Everything derived is gitignored, including `.state/` — it holds absolute
-  paths from the machine that produced it, so a clone that inherited it would
-  believe work was done that has no files behind it.
+  arrow per interval.
