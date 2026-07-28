@@ -14,7 +14,7 @@ deployment_<glider>.yml       <- metadata + sensor variables definiton for creat
 sensor_list_<glider>.txt      <- this file gets created/re-written by 00 script, do not edit it by hand (!)
 run_gliders.py                <- this is the main script that runs all necessary scripts for every glider (by default it runs for every gldier)
 
-00_build_sensor_list.py.      <- these scripts are described below
+00_build_sensor_list.py.      <- the numbered scripts are described below
 01_process_to_nc.py
 02_plots_full_timeseries.py
 03_process_glider_logs.py
@@ -34,21 +34,22 @@ interactive/<glider>/          |
 .state/<glider>/              /   <- this folder tracks what has already been processed (to avoid re-processign the same segments)
 ```
 
-## Do you work on local computer or on virtual machine? Set it up accordingly:
-
+## Are you working on a local computer or on virtual machine? Set it up accordingly:
 
 Currently in `config.py` we define two different locations where the data is stored (current configuration in RV Hydra): 
-- when you work on your local computer and you download the data files and log files from [SFMC website](https://sfmc.webbresearch.com/), you need to insert the data files in folder: `<repo>/data/<glider>-from-glider/` and log files in the folder: `<repo>/data/<glider>-logs/`
-- currently when you work on RV Hydra virtual machine enviroment (i.e. VM), the idea is that your data is automatically being downloaded (near-real-time) to folder `~/data/rt-data/<glider>/from-glider/`. In order for this to work properly, you need to set up a few things in VM t the beginning of the new deployment. 
+- when you work on your local computer and you download the data files and log files from [SFMC website](https://sfmc.webbresearch.com/), you need to insert the data files in folder: `<repo>/data/<glider>-from-glider/`, and log files in the folder: `<repo>/data/<glider>-logs/`
+- currently (July 2026), when you are work on RV Hydra virtual machine enviroment (i.e. VM), the idea is that your data is automatically being downloaded (near-real-time) to folder `~/data/rt-data/<glider>/from-glider/`. In order for this to work properly, **you need to set up a few things in VM at the beginning of the new deployment.** 
 
-Besides setting up the correct folders where the data is stored, you also should know (and define) what kind of data you have. There ar two types of dataset that glider produces: 
-- **realtime** data is stored as`sbd`/`tbd` files: these are confined files that contain information about science and glider flight per segment. They are small (as small as you decide them to be) and show measuring variables at every X seconds. It is advised that the gliders are set to download these files every time the glider has a connection with you/the satellite (when the glider is on the surface)
-- **recovered** data is stored as `dbd`/`ebd` files: these are files that contain the full timeseries from the glider. These are large fiels and usually they are downloaded from the glider at the very end (when the glider is back on board).
+Furthermore, you also should know (and define) what kind of data you have and want to process. There are two types of dataset that glider produces: 
+- **realtime** data is stored as`sbd`/`tbd` files: these are confined files that contain information about science and glider flight per segment. They are small (as small as you decide them to be) and show measured variables at every X seconds. It is advised that the gliders are set to download these files every time the glider has a connection with you/the satellite (when the glider is at the surface).
+- **recovered** data is stored as `dbd`/`ebd` files: these are files that contain the full timeseries from the glider. These are large fiels and usually they are downloaded from the glider at the very end (when the glider is retreived and back on board).
 
-Anothen thing to check is: how do the scritp know whether your setup is local computer or VM. By default, it is set automatically (the script first check whether you have any files in data/from-glider<glider>, and if not, checks whether there are folders and files as they should be in VM), but to have more control over this (and in case you have data in both folders), it is more rubust to set this up manually in `config.py` script. This can be done by changing the variables MACHINE and DATATYPE:
+Once you know your confiuration and what data you want to process, you need to define that in the scripts. So, how do the scrits know whether your setup is local computer or VM? 
+- By default, your configuraiton is detected automatically (the scripts first check whether you have any files in `data/from-glider<glider>`, and if not, they check whether you have existing folders and files as they should be set in VM).
+- **However,** it is advised that your set up has more control over this matter (and in case you have data in both folders). The workflow becomes more rubust if you set up your configuration manually in `config.py` script. This can be done simply by changing the following two variables `MACHINE` and `DATATYPE` as:
 ```python
-MACHINE  = 'auto'      # 'local' | 'vm'          | 'auto' (set it up based on your workflow)
-DATATYPE = 'auto'      # 'realtime' | 'recovered' | 'auto' (set it up based on whether you want to process sbd/tbd files (=realtime) or dbd/ebd files (=recovered)
+MACHINE  = 'auto'      # set it up insted to: 'local' | 'vm' | 'auto' (set it up based on your workflow)
+DATATYPE = 'auto'      # set it up insted to: 'realtime' | 'recovered' | 'auto' (set it up based on whether you want to process sbd/tbd files (=realtime) or dbd/ebd files (=recovered)
 ```
 
 Summary: 
